@@ -51,6 +51,13 @@ def collect_codepoints():
             if ch in IDS_OPERATORS or ch.isspace():
                 continue
             cps.add(ord(ch))
+    # 高频构件清单（build_unicode_index.py 产物）：真字形预览的主要数据来源
+    freq_file = ROOT / "web" / "public" / "glyphs-frequent.txt"
+    if freq_file.exists():
+        for line in freq_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                cps.add(int(line, 16))
     for arg in sys.argv[1:]:
         arg = arg.strip()
         if arg.startswith(("U+", "u+")):

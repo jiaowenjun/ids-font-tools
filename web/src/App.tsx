@@ -1,30 +1,36 @@
 import { useEffect, useMemo, useState } from 'react'
 import { parse } from './core/parse'
 import { layoutTree, type LayoutNode, type FallbackLookup } from './core/layout'
-import { loadGlyphDB, type GlyphDB } from './core/glyphStore'
+import { loadGlyphDB, lookup, type GlyphDB } from './core/glyphStore'
+import { loadUnicodeIndex, lookupUnicode, charOf, cpLabel, type UnicodeCandidate } from './core/unicodeIndex'
 import { IDSRenderer } from './components/IDSRenderer'
+import { GlyphView } from './components/GlyphView'
 import { IdsText } from './components/IdsText'
 import { CASES } from './cases'
 
 export default function App() {
   const [ids, setIds] = useState('⿰𠦝一')
-  const [size, setSize] = useState(180)
+  const [size, setSize] = useState(200)
   const [db, setDb] = useState<GlyphDB | null>(null)
   const [fallback, setFallback] = useState<FallbackLookup | null>(null)
+  const [unicodeIdx, setUnicodeIdx] = useState<Awaited<ReturnType<typeof loadUnicodeIndex>> | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const [selCp, setSelCp] = useState<string | null>(null) // 多候选时的预览对象
 
   useEffect(() => {
-    loadGlyphDB()
-      .then(setDb)
-      .catch((e) => setErr(String(e)))
+    loadGlyphDB().then(setDb).catch((e) => setErr(String(e)))
+    loadUnicodeIndex().then(setUnicodeIdx).catch(() => setUnicodeIdx(null))
     // 加载 CHISE 兜底映射（缺字时递归拆解）
     fetch('chise-fallback.json')
       .then((r) => (r.ok ? r.json() : null))
       .then((j: Record<string, string[]> | null) => {
-        if (j) setFallback(() => (ch: string) => {
-          const list = j[ch.codePointAt(0)!.toString(16).toUpperCase()]
-          return list?.[0] ?? null
-        })
+        if (j)
+          setFallback(
+            () => (ch: string) => {
+              const list = j[ch.codePointAt(0)!.toString(16).toUpperCase()]
+              return list?.[0] ?? null
+            },
+          )
       })
       .catch(() => undefined)
   }, [])
@@ -35,34 +41,58 @@ export default function App() {
   return (
     <div className="container">
       <header>
-        <h1>IDS 单字渲染</h1>
+        <h1>IDS 合字工坊</h1>
         <p>
-          输入 IDS 序列（如 <IdsText ids="⿰𠦝一" db={db} />），实时合成完整单字 · 部件取自中华书局宋体（三平面 TTF）
+          输入 IDS 序列（如 <IdsText ids="⿰𠦝一" db={db} />）→ 判定 Unicode / 字体收录 → 字体真实字形或方案 A 合成
+          · 部件取自中华书局宋体（三平面 TTF）
         </p>
       </header>
 
-      <ViewA ids={ids} setIds={setIds} size={size} setSize={setSize} db={db} fallback={fallback} />
+      <Composer
+        ids={ids}
+        setIds={(s) => {
+          setIds(s)
+          setSelCp(null)
+        }}
+        db={db}
+      />
+
+      <div className="chip-row" style={{ marginBottom: 16 }}>
+        {CASES.map((c) => (
+          <button
+            key={c.ids}
+            className={`chip ${ids === c.ids ? 'active' : ''}`}
+            title={c.note}
+            onClick={() => {
+              setIds(c.ids)
+              setSelCp(null)
+            }}
+          >
+            <IdsText ids={c.ids} db={db} />
+          </button>
+        ))}
+      </div>
+
+      <VerdictPanel ids={ids} unicodeIdx={unicodeIdx} selCp={selCp} setSelCp={setSelCp} />
+
+      <Preview
+        ids={ids}
+        db={db}
+        fallback={fallback}
+        unicodeIdx={unicodeIdx}
+        selCp={selCp}
+        size={size}
+        setSize={setSize}
+      />
     </div>
   )
 }
 
-function ViewA(props: {
-  ids: string
-  setIds: (s: string) => void
-  size: number
-  setSize: (n: number) => void
-  db: GlyphDB
-  fallback: FallbackLookup | null
-}) {
-  const { ids, setIds, size, setSize, db, fallback } = props
-  const [hoverCp, setHoverCp] = useState<string | null>(null)
+/* ---------------- 输入行 ---------------- */
+
+function Composer(props: { ids: string; setIds: (s: string) => void; db: GlyphDB }) {
+  const { ids, setIds } = props
   const [copied, setCopied] = useState(false)
-
-  const layout = useMemo(() => {
-    const ast = parse(ids)
-    return ast ? layoutTree(ast, db, fallback ?? undefined) : null
-  }, [ids, db, fallback])
-
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(ids)
@@ -72,60 +102,172 @@ function ViewA(props: {
       /* clipboard 不可用时忽略 */
     }
   }
+  return (
+    <div className="controls">
+      <input
+        type="text"
+        value={ids}
+        onChange={(e) => setIds(e.target.value)}
+        placeholder="输入 IDS 序列，如 ⿰𠦝一"
+        spellCheck={false}
+      />
+      <button className="primary" onClick={copy}>
+        {copied ? '已复制 ✓' : '复制 IDS'}
+      </button>
+    </div>
+  )
+}
+
+/* ---------------- 判定面板 ---------------- */
+
+function VerdictPanel(props: {
+  ids: string
+  unicodeIdx: Awaited<ReturnType<typeof loadUnicodeIndex>> | null
+  selCp: string | null
+  setSelCp: (cp: string | null) => void
+}) {
+  const { ids, unicodeIdx, selCp, setSelCp } = props
+  const parsed = useMemo(() => parse(ids), [ids])
+  const candidates = useMemo(() => lookupUnicode(unicodeIdx, ids), [unicodeIdx, ids])
+
+  if (!parsed) {
+    return (
+      <div className="panel verdict">
+        <span className="badge bad">IDS 解析失败</span>
+        <span className="hint">括号不配对或参数字符数不足</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="panel verdict">
+      <div className="verdict-row">
+        <span className={`badge ${candidates.length ? 'ok' : 'bad'}`}>
+          Unicode {candidates.length ? '已收录' : '未收录'}
+        </span>
+        {candidates.length === 0 ? (
+          <span className="hint">
+            CHISE / cjkvi-ids 中无此描述（未命中 ≠ Unicode 绝对未收录）；预览将使用方案 A 合成
+          </span>
+        ) : (
+          <span className="cand-row">
+            {candidates.map((c) => (
+              <CandidateChip key={c.cp} c={c} active={(selCp ?? candidates[0].cp) === c.cp} onClick={() => setSelCp(c.cp)} />
+            ))}
+            <span className="hint">{candidates.length > 1 ? '多个候选（同描述异码位），点击切换预览' : ''}</span>
+          </span>
+        )}
+      </div>
+      {candidates.length > 0 && (
+        <div className="verdict-row">
+          <span className={`badge ${fontVerdict(candidates, selCp) ? 'ok' : 'bad'}`}>
+            中华书局宋体 {fontVerdict(candidates, selCp) ? '已收录' : '未收录'}
+          </span>
+          <span className="hint">
+            {fontVerdict(candidates, selCp)
+              ? '预览优先使用字体真实字形（若字形数据已提取）'
+              : '三平面 cmap 均无此码位；预览使用方案 A 合成'}
+          </span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function fontVerdict(candidates: UnicodeCandidate[], selCp: string | null): boolean {
+  const target = selCp ? candidates.find((c) => c.cp === selCp) : candidates[0]
+  return target?.inFont ?? false
+}
+
+function CandidateChip(props: { c: UnicodeCandidate; active: boolean; onClick: () => void }) {
+  const { c, active, onClick } = props
+  return (
+    <button className={`chip cand ${active ? 'active' : ''}`} onClick={onClick}>
+      <span style={{ fontSize: 18 }}>{charOf(c.cp)}</span>
+      <span className="cp">{cpLabel(c.cp)}</span>
+      <span className={`mini ${c.inFont ? 'ok' : 'bad'}`}>{c.inFont ? '字体✓' : '字体✗'}</span>
+    </button>
+  )
+}
+
+/* ---------------- 预览 ---------------- */
+
+function Preview(props: {
+  ids: string
+  db: GlyphDB
+  fallback: FallbackLookup | null
+  unicodeIdx: Awaited<ReturnType<typeof loadUnicodeIndex>> | null
+  selCp: string | null
+  size: number
+  setSize: (n: number) => void
+}) {
+  const { ids, db, fallback, unicodeIdx, selCp, size, setSize } = props
+  const [hoverCp, setHoverCp] = useState<string | null>(null)
+
+  const parsed = useMemo(() => parse(ids), [ids])
+  const layout = useMemo(
+    () => (parsed ? layoutTree(parsed, db, fallback ?? undefined) : null),
+    [parsed, db, fallback],
+  )
+  const candidates = useMemo(() => lookupUnicode(unicodeIdx, ids), [unicodeIdx, ids])
+  const previewCp = selCp ?? candidates[0]?.cp ?? null
+  // 真字形条件：Unicode 命中 + 字体收录 + 字形数据已提取
+  const realGlyph = previewCp && candidates.find((c) => c.cp === previewCp)?.inFont
+    ? lookup(db, charOf(previewCp))
+    : undefined
 
   return (
     <>
-      <div className="controls">
-        <input
-          type="text"
-          value={ids}
-          onChange={(e) => setIds(e.target.value)}
-          placeholder="输入 IDS 序列，如 ⿰𠦝一"
-          spellCheck={false}
-        />
+      <div className="controls" style={{ marginBottom: 12 }}>
         <label>
           字号 {size}px
-          <input type="range" min={40} max={320} value={size} onChange={(e) => setSize(+e.target.value)} />
+          <input type="range" min={40} max={360} value={size} onChange={(e) => setSize(+e.target.value)} />
         </label>
-        <button className="primary" onClick={copy}>
-          {copied ? '已复制 ✓' : '复制 IDS'}
-        </button>
-      </div>
-
-      <div className="chip-row" style={{ marginBottom: 20 }}>
-        {CASES.map((c) => (
-          <button key={c.ids} className={`chip ${ids === c.ids ? 'active' : ''}`} title={c.note} onClick={() => setIds(c.ids)}>
-            <IdsText ids={c.ids} db={db} />
-          </button>
-        ))}
+        <span className="badge source">{realGlyph ? '字体真实字形' : '方案 A · SVG 合成'}</span>
       </div>
 
       <div className="grid-2">
         <div className="render-box">
-          <IDSRenderer
-            ids={ids}
-            db={db}
-            fallback={fallback ?? undefined}
-            size={size}
-            hoverCp={hoverCp}
-            onHover={(cp) => setHoverCp(cp)}
-          />
-          <span className="hint">悬停构件查看码位；虚线框 = 字形库缺字</span>
+          {realGlyph ? (
+            <GlyphView cp={previewCp!} db={db} size={size} />
+          ) : layout ? (
+            <IDSRenderer
+              ids={ids}
+              db={db}
+              fallback={fallback ?? undefined}
+              size={size}
+              hoverCp={hoverCp}
+              onHover={(cp) => setHoverCp(cp)}
+            />
+          ) : null}
+          <span className="hint">
+            {realGlyph
+              ? `中华书局宋体原生字形 · ${cpLabel(previewCp!)}`
+              : previewCp
+                ? `字体已收录但字形数据未提取（高频 3000 字之外），以方案 A 合成显示 · ${cpLabel(previewCp)}`
+                : '悬停构件查看码位；虚线框 = 字形库缺字（自动经 CHISE 兜底拆解）'}
+          </span>
         </div>
         <div className="panel">
-          <h3 style={{ marginTop: 0, fontSize: 15 }}>构件树</h3>
-          {layout ? (
+          <h3 style={{ marginTop: 0, fontSize: 15 }}>构件树{realGlyph ? '（未使用：直接渲染字体字形）' : ''}</h3>
+          {layout && !realGlyph ? (
             <div className="tree">
               <TreeView node={layout} db={db} hoverCp={hoverCp} setHoverCp={setHoverCp} />
             </div>
           ) : (
-            <p className="hint">IDS 解析失败：括号不配对或字符数不足</p>
+            <p className="hint">
+              {realGlyph
+                ? '该序列描述的字符已收录且有字形，无需合成。'
+                : 'IDS 解析失败。'}
+            </p>
           )}
         </div>
       </div>
     </>
   )
 }
+
+/* ---------------- 构件树 ---------------- */
 
 function TreeView(props: {
   node: LayoutNode

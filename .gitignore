@@ -2,8 +2,10 @@
 assets/
 references/
 
-# 方正字体衍生产物（版权原因不入库，用 tools/ 脚本再生成）
+# 方正字体 / CHISE 衍生产物（版权原因不入库，用 tools/ 脚本再生成）
 web/public/glyphs.json
 web/public/chise-fallback.json
+web/public/ids-unicode-index.json
+web/public/glyphs-frequent.txt
 web/node_modules/
 web/dist/
