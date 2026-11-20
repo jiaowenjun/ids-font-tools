@@ -1,3 +1,9 @@
 .DS_Store
 assets/
 references/
+
+# 方正字体衍生产物（版权原因不入库，用 tools/ 脚本再生成）
+web/public/glyphs.json
+web/public/chise-fallback.json
+web/node_modules/
+web/dist/
