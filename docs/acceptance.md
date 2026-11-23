@@ -157,6 +157,7 @@ web/src/App.tsx             单页应用（输入/字号/用例 chips/构件树�
 ```bash
 python3 tools/extract_glyphs.py      # glyphs.json（faceBox + 字形，含 IDS 运算符）
 python3 tools/build_fallback.py      # chise-fallback.json（2686 高频构件兜底）
+python3 tools/prepare_web_fonts.py   # fonts/zhsw-*.ttf + zhswRanges.ts（@font-face 按需渲染原字体）
 cd web && npm install && npm run dev
 ```
 
@@ -264,5 +265,40 @@ cd web && npm install && npm run dev
 | `⿰日月` | 收录 + 字形已提取 | 对比模式：左真字形（U+660E path）右合成，**两者字形目测一致**——合成方案正确性的直观旁证 |
 | `⿱十早` | 收录 + 字形未提取（U+9FBA 龺） | 对比模式：左系统字体代显（如实标注）右合成 |
 | 候选 chip 切换 | U+9FBA ↔ U+2099D | 预览、标签、hint 全部联动 |
+
+回归：`tsc` 零错误、单测 15/15。
+
+### 9.7 缺陷修复案例：「系统字体代显」渲染成横条乱码（U+27BAD 𧮭）
+
+**现象**：输入 `⿰谷丸`（= U+27BAD 𧮭，Ext-B，字体已收录但字形未提取），左侧「字体真实字形」框渲染成**六条水平黑条**，判定候选 chip 里的小字同样乱码；hint 却声称「系统字体代显」。
+
+**根因**：回退设计错误——`GlyphView` 对未提取字形裸渲染 `<span>{ch}</span>`，把希望寄托在系统字体上；而 macOS 系统字体对 Ext-B 以上的生僻字**同样没有覆盖**，WebKit 用 LastResort 类字形（横条）显示。「代显」是个无法兑现的假承诺。
+
+**方案选型**（先量化再动手）：
+
+| 候选 | 评估 | 结论 |
+|---|---|---|
+| 全量提取收录候选字形 | 索引实测：收录候选 **88,066** 字、缺 **85,389**，按 1KB/字形 ≈ **87 MB** | ❌ glyphs.json 现 3MB 已是急切加载 |
+| 按需提取（服务端） | 项目是纯静态 demo，无服务端 | ❌ |
+| **@font-face 直接渲染原 TTF** | 本地就有三平面 TTF（17/40/24 MB），`unicode-range` 命中才下载对应平面；浏览器光栅化 = 真宋体字形，零提取 | ✅ |
+
+**实现**（`tools/prepare_web_fonts.py` + `web/src/core/zhswFont.ts` + `GlyphView.tsx`）：
+
+1. `prepare_web_fonts.py`：TTF 净化重存到 `web/public/fonts/zhsw-{00,02,15}.ttf`，并从 cmap 生成 `zhswRanges.ts`（unicode-range 描述符，仅 CJK 区段 ≥ U+2000）
+2. `zhswFont.ts`：三个 FontFace 同族 `ZHSW-Web`，按 **15→02→00 顺序注册**（同族后注册者优先）——三平面 cmap 在 BMP 有零星重叠，此序使重叠段由 00 胜出，与 `extract_glyphs.py` 的 00→02→15 提取路由一致；`preloadZhsw(ch)` 经 `document.fonts.load` 触发按需下载
+3. `GlyphView` 未提取分支：裸 span → `ZhswChar`（ZHSW 栈 + 行框比例与 SVG 视口对齐 + preload）；候选 chip 同步接入（用户截图里 chip 乱码同源）
+4. hint 文案改为如实口径：「按需加载宋体 TTF 由浏览器渲染真字形」
+
+**过程中撞上的第二层问题**：00 平面 FontFace 一律报 `NetworkError`/「Invalid font data」而 02/15 正常（fetch 完整 200 返回 18MB，解码层拒收）。**变体二分定位**：构造「只剔 cmap(1,0) 子表」与「只剔 hinting 表」两变体分别试探 → 前者 LOADED、后者仍拒收 → **元凶是 00 平面畸形的 (1,0) format 0 Macintosh cmap 子表**（02/15 的同名子表无恙，fontTools 也能解析，仅 WebKit OT sanitizer 拒收）。处方并入脚本：cmap 只保留 platform 3 子表（(3,1)/(3,10)，CJK 映射完整）+ 剔 vhea/vmtx/GSUB。
+
+**验证**（浏览器 + 独立证据链）：
+
+| 输入 | 场景 | 结果 |
+|---|---|---|
+| `⿰谷丸` U+27BAD（02 平面） | 原缺陷场景 | 左框真宋体字形（谷+丸），chip 正常；FontFace 02=loaded |
+| `⿱十早` U+9FBA 龺（00 平面） | BMP 未提取 | 左框真字形 + chip 正常；FontFace 00=loaded（拒收已修复） |
+| `⿰日月` / `⿰𠦝一` | 回归 | SVG 真字形 / 单框合成，行为不变 |
+
+字形正确性三方对证：① fontTools 直接 dump TTF 轮廓（U+27BAD 实为谷+丸，与 CHISE `IDS-UCS-Ext-B-4.txt:7087` 一致）；② 300px 截图左右对比基本吻合；③ **像素指纹**：canvas 以 ZHSW-Web 与 PingFang 各渲染「龺」相差 1552px（自绘噪声 0）→ 页面确实在用宋体原字体而非系统字体（advance 全宽 1em，宽度法无法区分，故用像素法）。
 
 回归：`tsc` 零错误、单测 15/15。

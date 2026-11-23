@@ -4,7 +4,8 @@ import { layoutTree, type LayoutNode, type FallbackLookup } from './core/layout'
 import { loadGlyphDB, lookup, type GlyphDB } from './core/glyphStore'
 import { loadUnicodeIndex, lookupUnicode, charOf, cpLabel, type UnicodeCandidate } from './core/unicodeIndex'
 import { IDSRenderer } from './components/IDSRenderer'
-import { GlyphView } from './components/GlyphView'
+import { GlyphView, ZhswChar } from './components/GlyphView'
+import { registerZhswFonts } from './core/zhswFont'
 import { IdsText } from './components/IdsText'
 import { CASES } from './cases'
 
@@ -19,6 +20,7 @@ export default function App() {
 
   useEffect(() => {
     loadGlyphDB().then(setDb).catch((e) => setErr(String(e)))
+    registerZhswFonts() // 三平面 TTF @font-face（unicode-range 按需下载）
     loadUnicodeIndex().then(setUnicodeIdx).catch(() => setUnicodeIdx(null))
     // 加载 CHISE 兜底映射（缺字时递归拆解）
     fetch('chise-fallback.json')
@@ -165,7 +167,7 @@ function VerdictPanel(props: {
           </span>
           <span className="hint">
             {fontVerdict(candidates, selCp)
-              ? '预览并排显示字体真实字形与方案 A 合成，便于对比（若字形数据未提取则系统字体代显）'
+              ? '预览并排显示字体真实字形与方案 A 合成，便于对比（字形未提取时按需加载宋体原字体直接渲染）'
               : '三平面 cmap 均无此码位；预览使用方案 A 合成'}
           </span>
         </div>
@@ -183,7 +185,7 @@ function CandidateChip(props: { c: UnicodeCandidate; active: boolean; onClick: (
   const { c, active, onClick } = props
   return (
     <button className={`chip cand ${active ? 'active' : ''}`} onClick={onClick}>
-      <span style={{ fontSize: 18 }}>{charOf(c.cp)}</span>
+      <ZhswChar ch={charOf(c.cp)} size={18} />
       <span className="cp">{cpLabel(c.cp)}</span>
       <span className={`mini ${c.inFont ? 'ok' : 'bad'}`}>{c.inFont ? '字体✓' : '字体✗'}</span>
     </button>
@@ -235,7 +237,7 @@ function Preview(props: {
               <span className="hint">
                 {realGlyph
                   ? `中华书局宋体原生字形 · ${cpLabel(previewCp!)}`
-                  : `字形数据未提取（高频 3000 字之外），系统字体代显 · ${cpLabel(previewCp!)}`}
+                  : `字形数据未提取（高频 3000 字之外），按需加载宋体 TTF 由浏览器渲染真字形 · ${cpLabel(previewCp!)}`}
               </span>
             </div>
           )}

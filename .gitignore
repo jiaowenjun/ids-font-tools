@@ -9,3 +9,5 @@ web/public/ids-unicode-index.json
 web/public/glyphs-frequent.txt
 web/node_modules/
 web/dist/
+# 三平面 TTF 原字体（@font-face 按需渲染用，版权不入库）
+web/public/fonts/
