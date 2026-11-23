@@ -11,6 +11,7 @@
 ## 核心特性
 
 - **判定链**：Unicode 收录 → 字体收录 → 真字形/合成，口径与降级原因在界面上如实标注
+- **按部件反查**：IDS 模式 + 通配符（如 `⿰x几` = 左右结构·右为几）搜字体已收录的字，全量索引预解析后实时匹配，点击结果载入工坊
 - 任意 IDS 序列**即时渲染**（12 种经典运算符：⿰⿱⿲⿳⿴⿵⿶⿷⿸⿹⿺⿻，支持嵌套）
 - **跨字体 cmap 合并路由**：三份平面字体（00/02/15）覆盖互斥，统一按码位路由取字形
 - **CHISE 兜底拆解**：字形库缺字时自动查官方 IDS 描述递归拆解（如缺 `明` → `⿰日月`，可多级递归）
@@ -27,7 +28,7 @@ python3 tools/build_fallback.py        # → chise-fallback.json（2686 个高�
 
 # 2. 启动
 cd web && npm install && npm run dev   # http://localhost:5173
-npm test                               # vitest（15 用例）
+npm test                               # vitest（20 用例）
 ```
 
 ## 目录
@@ -41,7 +42,7 @@ tools/
   extract_glyphs.py      cmap 合并路由 + faceBox 统计 + 字形提取（含 IDS 运算符）
   build_fallback.py      CHISE/cjkvi-ids 高频构件兜底映射
 web/                     Vite + React + TS
-  src/core/              框架无关核心：parse / glyphStore / layout / unicodeIndex
+  src/core/              框架无关核心：parse / glyphStore / layout / unicodeIndex / patternSearch
   src/components/        IDSRenderer（合成）/ GlyphView（真字形）/ IdsText
 docs/acceptance.md       验收文档（实现过程 · 问题与解决 · 评估结论）
 ```

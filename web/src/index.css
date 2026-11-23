@@ -79,3 +79,7 @@ button.primary:disabled { background: #ccc; cursor: default; }
 .mini.ok { color: #2c6b24; }
 .mini.bad { color: #a4392a; }
 .chip.cand.active .mini { color: #fff; }
+
+/* 按部件反查：结果网格 */
+.results-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.results-grid .chip.cand { padding: 4px 10px 4px 8px; }

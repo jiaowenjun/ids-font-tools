@@ -5,6 +5,13 @@ import { parse, flatten, children } from '../parse'
 import { layoutTree } from '../layout'
 import type { LayoutNode } from '../layout'
 import type { GlyphDB } from '../glyphStore'
+import {
+  parsePattern,
+  matchPattern,
+  prepareSearchIndex,
+  searchByPattern,
+} from '../patternSearch'
+import type { UnicodeIndex } from '../unicodeIndex'
 
 interface SimpleLeaf {
   char: string
@@ -140,3 +147,64 @@ function collectLeaves(n: LayoutNode): SimpleLeaf[] {
   if (n.kind === 'leaf') return [n]
   return n.children.flatMap(collectLeaves)
 }
+
+describe('patternSearch', () => {
+  it('通配符匹配单字部件与整棵子树', () => {
+    const pat = parsePattern('⿰x几')!
+    expect(matchPattern(pat, parse('⿰木几')!)).toBe(true) // 机
+    expect(matchPattern(pat, parse('⿰⿰口耳几')!)).toBe(true) // 左槽为嵌套组合
+    expect(matchPattern(pat, parse('⿰木子')!)).toBe(false) // 右部件不符
+    expect(matchPattern(pat, parse('⿱木几')!)).toBe(false) // 结构符不符
+    expect(matchPattern(pat, parse('⿰几木')!)).toBe(false) // 槽位不符
+  })
+
+  it('x / X / * 均为通配符，HTML 实体叶可被通配匹配', () => {
+    expect(matchPattern(parsePattern('⿰X几')!, parse('⿰木几')!)).toBe(true)
+    expect(matchPattern(parsePattern('⿰*几')!, parse('⿰木几')!)).toBe(true)
+    expect(matchPattern(parsePattern('⿰x一')!, parse('⿰&A-xB;一')!)).toBe(true)
+    expect(matchPattern(parsePattern('⿰&A-xB;一')!, parse('⿰木一')!)).toBe(false)
+  })
+
+  it('模式宽容空白；非法模式返回 null', () => {
+    expect(parsePattern(' ⿰x几 ')).toEqual(parse('⿰x几'))
+    expect(parsePattern('⿰x')).toBeNull()
+    expect(parsePattern('⿰x几 y')).toBeNull() // 去空白后多余字符
+  })
+
+  const miniIndex: UnicodeIndex = {
+    note: 'test',
+    index: {
+      '⿰木几': [['673A', 1]], // 机 · 字体已收录
+      '⿰口几': [['53FD', 1]], // 叽
+      '⿰王几': [['7391', 1]], // 玑（简体，另一条描述见下）
+      '⿰𤣩几': [['7391', 1]], // 玑（繁形部件描述 → 同码位去重）
+      '⿰⿰口耳几': [['46B5', 0]], // 嵌套左槽 · 字体未收录
+      '⿰木子': [['5B57', 1]], // 不应命中
+      千北: [['5317', 1]], // 源数据怪癖：无法解析，跳过
+    },
+  }
+
+  it('全扫描：命中、去重、fontOnly 过滤、跳过坏键', async () => {
+    const prepared = await prepareSearchIndex(miniIndex, new Map())
+    expect(prepared.skipped).toBe(1)
+    expect(prepared.entries).toHaveLength(6)
+
+    const all = searchByPattern(prepared, parsePattern('⿰x几')!)
+    expect(all.map((h) => h.cp).sort()).toEqual(['46B5', '53FD', '673A', '7391'])
+    const ji = all.find((h) => h.cp === '7391')!
+    expect(ji.idsAll).toEqual(['⿰王几', '⿰𤣩几']) // 同码位两条描述按索引序合并
+
+    const fontOnly = searchByPattern(prepared, parsePattern('⿰x几')!, { fontOnly: true })
+    expect(fontOnly.map((h) => h.cp)).toEqual(['53FD', '673A', '7391']) // 无 46B5（未收录）
+  })
+
+  it('排序：高频字优先，其余按码位升序', async () => {
+    const freq = new Map([
+      ['673A', 500], // 机 高频
+    ])
+    const prepared = await prepareSearchIndex(miniIndex, freq)
+    const hits = searchByPattern(prepared, parsePattern('⿰x几')!)
+    expect(hits[0].cp).toBe('673A') // 高频置顶
+    expect(hits.slice(1).map((h) => h.cp)).toEqual(['46B5', '53FD', '7391']) // 数值码位升序
+  })
+})

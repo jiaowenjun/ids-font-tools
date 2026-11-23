@@ -7,6 +7,12 @@ import { IDSRenderer } from './components/IDSRenderer'
 import { GlyphView, ZhswChar } from './components/GlyphView'
 import { registerZhswFonts } from './core/zhswFont'
 import { IdsText } from './components/IdsText'
+import {
+  parsePattern,
+  prepareSearchIndex,
+  searchByPattern,
+  type PreparedSearchIndex,
+} from './core/patternSearch'
 import { CASES } from './cases'
 
 export default function App() {
@@ -86,7 +92,122 @@ export default function App() {
         size={size}
         setSize={setSize}
       />
+
+      <PatternSearch
+        db={db}
+        unicodeIdx={unicodeIdx}
+        onPick={(hitIds, cp) => {
+          setIds(hitIds)
+          setSelCp(cp)
+          window.scrollTo({ top: 0, behavior: 'smooth' })
+        }}
+      />
     </div>
+  )
+}
+
+/* ---------------- 按部件反查 ---------------- */
+
+const SEARCH_CASES: [string, string][] = [
+  ['⿰x几', '左右结构 · 右为几'],
+  ['⿱艹x', '上下结构 · 上为艹'],
+  ['⿴囗x', '全包围 · 内为口以外的部件'],
+]
+
+const MAX_SHOW = 300
+
+function PatternSearch(props: {
+  db: GlyphDB
+  unicodeIdx: Awaited<ReturnType<typeof loadUnicodeIndex>> | null
+  onPick: (ids: string, cp: string) => void
+}) {
+  const { db, unicodeIdx, onPick } = props
+  const [pattern, setPattern] = useState('⿰x几')
+  const [fontOnly, setFontOnly] = useState(true)
+  const [prepared, setPrepared] = useState<PreparedSearchIndex | null>(null)
+  const [buildErr, setBuildErr] = useState<string | null>(null)
+
+  // 索引到位即后台预解析（分块调度，不阻塞交互），首次搜索前通常已就绪
+  useEffect(() => {
+    if (!unicodeIdx) return
+    prepareSearchIndex(unicodeIdx)
+      .then(setPrepared)
+      .catch((e) => setBuildErr(String(e)))
+  }, [unicodeIdx])
+
+  const parsed = useMemo(() => parsePattern(pattern), [pattern])
+  const hits = useMemo(
+    () => (prepared && parsed ? searchByPattern(prepared, parsed, { fontOnly }) : []),
+    [prepared, parsed, fontOnly],
+  )
+
+  return (
+    <section className="panel" style={{ marginTop: 24 }}>
+      <h3 style={{ marginTop: 0, fontSize: 15 }}>按部件反查</h3>
+      <div className="controls" style={{ marginBottom: 10 }}>
+        <input
+          type="text"
+          value={pattern}
+          onChange={(e) => setPattern(e.target.value)}
+          placeholder="如 ⿰x几"
+          spellCheck={false}
+        />
+        <label>
+          <input type="checkbox" checked={fontOnly} onChange={(e) => setFontOnly(e.target.checked)} />
+          仅字体已收录
+        </label>
+        <span className="chip-row">
+          {SEARCH_CASES.map(([c, note]) => (
+            <button
+              key={c}
+              className={`chip ${pattern === c ? 'active' : ''}`}
+              title={note}
+              onClick={() => setPattern(c)}
+            >
+              <IdsText ids={c} db={db} />
+            </button>
+          ))}
+        </span>
+      </div>
+      <div className="verdict-row" style={{ marginBottom: 10 }}>
+        {buildErr ? (
+          <span className="badge bad">索引构建失败：{buildErr}</span>
+        ) : !unicodeIdx ? (
+          <span className="badge bad">Unicode 索引未加载</span>
+        ) : !prepared ? (
+          <span className="badge source">构建反查索引…（全量 IDS 预解析）</span>
+        ) : !parsed ? (
+          <span className="badge bad">模式解析失败</span>
+        ) : (
+          <span className={`badge ${hits.length ? 'ok' : 'bad'}`}>
+            命中 {hits.length} 字{fontOnly ? '（字体已收录）' : ''}
+          </span>
+        )}
+        <span className="hint">
+          模式 = IDS + 通配符 x / X / *（匹配整个部件子树）；同字多条描述去重，高频字优先、其余按码位升序
+        </span>
+      </div>
+      <div className="results-grid">
+        {prepared && parsed &&
+          hits.slice(0, MAX_SHOW).map((h) => (
+            <button
+              key={h.cp}
+              className="chip cand"
+              title={h.idsAll.join('\n')}
+              onClick={() => onPick(h.ids, h.cp)}
+            >
+              <ZhswChar ch={charOf(h.cp)} size={22} />
+              <span className="cp">{cpLabel(h.cp)}</span>
+              {!h.inFont && <span className="mini bad">字体✗</span>}
+            </button>
+          ))}
+      </div>
+      {hits.length > MAX_SHOW && (
+        <p className="hint" style={{ marginBottom: 0 }}>
+          共 {hits.length} 字，仅显示前 {MAX_SHOW}（高频字优先，其余码位升序）
+        </p>
+      )}
+    </section>
   )
 }
 
