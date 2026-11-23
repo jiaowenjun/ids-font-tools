@@ -5,6 +5,7 @@
 import type { CSSProperties } from 'react'
 import { lookup, type GlyphDB } from '../core/glyphStore'
 import { preloadZhsw, ZHSW_STACK } from '../core/zhswFont'
+import { ZhswChar } from './GlyphView'
 import { useEffect } from 'react'
 
 const OPERATORS = new Set('⿰⿱⿲⿳⿴⿵⿶⿷⿸⿹⿺⿻⿼⿽')
@@ -28,10 +29,10 @@ export function IdsText({ ids, db, size = 14, style }: { ids: string; db: GlyphD
   )
 }
 
-/** 单字形内联小 SVG（按 ink bounds 裁剪，避免大方框留白） */
+/** 单字形内联小 SVG（按 ink bounds 裁剪，避免大方框留白）；库外字回退宋体栈文本 */
 export function InlineGlyph({ char, db, size, color = 'currentColor' }: { char: string; db: GlyphDB; size: number; color?: string }) {
   const g = lookup(db, char)
-  if (!g?.path) return <span style={{ fontSize: size }}>{char}</span>
+  if (!g?.path) return <ZhswChar ch={char} size={size} color={color} />
   const [x0, y0, x1, y1] = g.bounds ?? [0, 0, g.advance, db.upem]
   const w = Math.max(1e-6, x1 - x0)
   const h = Math.max(1e-6, y1 - y0)

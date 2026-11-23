@@ -5,8 +5,8 @@ import { loadGlyphDB, lookup, type GlyphDB } from './core/glyphStore'
 import { loadUnicodeIndex, lookupUnicode, charOf, cpLabel, type UnicodeCandidate } from './core/unicodeIndex'
 import { IDSRenderer } from './components/IDSRenderer'
 import { GlyphView, ZhswChar } from './components/GlyphView'
-import { registerZhswFonts } from './core/zhswFont'
-import { IdsText } from './components/IdsText'
+import { registerZhswFonts, preloadZhsw, ZHSW_STACK } from './core/zhswFont'
+import { IdsText, InlineGlyph } from './components/IdsText'
 import {
   parsePattern,
   prepareSearchIndex,
@@ -157,6 +157,10 @@ function PatternSearch(props: {
 }) {
   const { db, unicodeIdx, prepared, buildErr, pattern, setPattern, onPick } = props
   const [fontOnly, setFontOnly] = useState(true)
+  // Safari/系统字体对 IDS 运算符与生僻部件无覆盖：反查输入框同样用宋体栈
+  useEffect(() => {
+    ;[...pattern].forEach(preloadZhsw)
+  }, [pattern])
 
   const parsed = useMemo(() => parsePattern(pattern), [pattern])
   const hits = useMemo(
@@ -174,6 +178,7 @@ function PatternSearch(props: {
           onChange={(e) => setPattern(e.target.value)}
           placeholder="如 ⿰x几"
           spellCheck={false}
+          style={{ fontFamily: ZHSW_STACK }}
         />
         <label>
           <input type="checkbox" checked={fontOnly} onChange={(e) => setFontOnly(e.target.checked)} />
@@ -239,6 +244,10 @@ function PatternSearch(props: {
 function Composer(props: { ids: string; setIds: (s: string) => void; db: GlyphDB }) {
   const { ids, setIds } = props
   const [copied, setCopied] = useState(false)
+  // Safari/系统字体对 IDS 运算符与生僻部件无覆盖（方框/横条）：输入框用宋体栈
+  useEffect(() => {
+    ;[...ids].forEach(preloadZhsw)
+  }, [ids])
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(ids)
@@ -256,6 +265,7 @@ function Composer(props: { ids: string; setIds: (s: string) => void; db: GlyphDB
         onChange={(e) => setIds(e.target.value)}
         placeholder="输入 IDS 序列，如 ⿰𠦝一"
         spellCheck={false}
+        style={{ fontFamily: ZHSW_STACK }}
       />
       <button className="primary" onClick={copy}>
         {copied ? '已复制 ✓' : '复制 IDS'}
@@ -496,7 +506,8 @@ function TreeView(props: {
   if (n.kind === 'leaf') {
     return (
       <div style={{ paddingLeft: depth * 18 }} {...leafProps}>
-        {n.char}
+        {/* Safari/系统字体对生僻部件无覆盖：库内字用内联 SVG，库外回退宋体栈 */}
+        <InlineGlyph char={n.char} db={db} size={15} />
         <span className="cp">U+{n.cp}</span>
         {n.missing && (
           <span className="cp">字形库缺字{n.inferred ? '·兜底失败' : '·宋体直渲染'}</span>
