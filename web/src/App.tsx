@@ -11,6 +11,7 @@ import {
   parsePattern,
   prepareSearchIndex,
   searchByPattern,
+  containsWildcard,
   type PreparedSearchIndex,
 } from './core/patternSearch'
 import { searchSimilar, suggestPatterns } from './core/similarSearch'
@@ -141,7 +142,9 @@ export default function App() {
 const SEARCH_CASES: [string, string][] = [
   ['⿰x几', '左右结构 · 右为几'],
   ['⿱艹x', '上下结构 · 上为艹'],
-  ['⿴囗x', '全包围 · 内为口以外的部件'],
+  ['⿴囗x', '全包围 · 内为单部件'],
+  ['⿰亻⿱x山', '嵌套：左右 + 右为上下组合（下为山）'],
+  ['⿴囗⿰xx', '嵌套：全包围 + 内为左右组合'],
 ]
 
 const MAX_SHOW = 300
@@ -167,6 +170,12 @@ function PatternSearch(props: {
     () => (prepared && parsed ? searchByPattern(prepared, parsed, { fontOnly }) : []),
     [prepared, parsed, fontOnly],
   )
+  // 解析失败 / 全具体无命中（引导换通配符）/ 常规语法说明，三种口径如实区分
+  const hint = !parsed
+    ? '括号不配对、参数字符数不足，或含 ⿼⿽ 等暂不支持的运算符'
+    : prepared && hits.length === 0 && !containsWildcard(parsed)
+      ? '无通配符 = 精确结构匹配，索引中无此描述；可将任意部件换成 x 放宽（如 ⿰亻⿱巛山 → ⿰亻⿱x山）'
+      : '模式 = IDS + 通配符 x / X / *（匹配整个部件子树，支持任意嵌套构型）；同字多条描述去重，高频字优先、其余按码位升序'
 
   return (
     <section className="panel" id="pattern-search" style={{ marginTop: 24 }}>
@@ -211,9 +220,7 @@ function PatternSearch(props: {
             命中 {hits.length} 字{fontOnly ? '（字体已收录）' : ''}
           </span>
         )}
-        <span className="hint">
-          模式 = IDS + 通配符 x / X / *（匹配整个部件子树）；同字多条描述去重，高频字优先、其余按码位升序
-        </span>
+        <span className="hint">{hint}</span>
       </div>
       <div className="results-grid">
         {prepared && parsed &&

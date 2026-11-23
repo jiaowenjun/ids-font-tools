@@ -41,6 +41,12 @@ export function parsePattern(pattern: string): IDS | null {
 const isWildcard = (n: IDS): boolean =>
   n.type === 'char' && WILDCARDS.has((n as Character).char)
 
+/** 模式中是否含通配符（无通配符 = 精确结构匹配，无命中时的引导提示要用） */
+export function containsWildcard(ids: IDS): boolean {
+  if (isWildcard(ids)) return true
+  return children(ids).some(containsWildcard)
+}
+
 /** 结构化匹配：模式与键的 AST 逐节点比对，通配符叶吞掉整棵子树 */
 export function matchPattern(pattern: IDS, node: IDS): boolean {
   if (isWildcard(pattern)) return true

@@ -8,6 +8,7 @@ import type { GlyphDB } from '../glyphStore'
 import {
   parsePattern,
   matchPattern,
+  containsWildcard,
   prepareSearchIndex,
   searchByPattern,
 } from '../patternSearch'
@@ -170,6 +171,13 @@ describe('patternSearch', () => {
     expect(parsePattern(' ⿰x几 ')).toEqual(parse('⿰x几'))
     expect(parsePattern('⿰x')).toBeNull()
     expect(parsePattern('⿰x几 y')).toBeNull() // 去空白后多余字符
+  })
+
+  it('containsWildcard：任意深度检测；拉丁 x 字面量即通配符', () => {
+    expect(containsWildcard(parsePattern('⿰x几')!)).toBe(true)
+    expect(containsWildcard(parsePattern('⿰亻⿱x山')!)).toBe(true) // 通配符在嵌套层
+    expect(containsWildcard(parsePattern('⿰亻⿱巛山')!)).toBe(false) // 全具体
+    expect(containsWildcard(parsePattern('⿰亻⿱巛X')!)).toBe(true) // X 同样计入
   })
 
   const miniIndex: UnicodeIndex = {
