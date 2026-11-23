@@ -11,6 +11,7 @@ import {
   prepareSearchIndex,
   searchByPattern,
 } from '../patternSearch'
+import { searchSimilar, suggestPatterns } from '../similarSearch'
 import type { UnicodeIndex } from '../unicodeIndex'
 
 interface SimpleLeaf {
@@ -206,5 +207,45 @@ describe('patternSearch', () => {
     const hits = searchByPattern(prepared, parsePattern('⿰x几')!)
     expect(hits[0].cp).toBe('673A') // 高频置顶
     expect(hits.slice(1).map((h) => h.cp)).toEqual(['46B5', '53FD', '7391']) // 数值码位升序
+  })
+})
+
+describe('similarSearch（近似描述）', () => {
+  const idx: UnicodeIndex = {
+    note: 'test',
+    index: {
+      '⿰亻𭗼': [['344E', 1]], // 㑎 · 𭗼=⿱巛山（真实案例）
+      '⿰亻革': [['313BC', 0]], // 𱎼 · 仅共享亻
+      '⿰木几': [['673A', 1]], // 机 · 无共享部件
+    },
+  }
+  // 兜底映射：𡿸=⿳巛一囚、𭗼=⿱巛山（叶展开后两者共享 巛）
+  const fallback: Record<string, string> = { '21FF8': '⿳巛一囚', '2D5FC': '⿱巛山' }
+
+  it('同形异码部件：⿰亻𡿸 的近似首选是 㑎 ⿰亻𭗼', async () => {
+    const prepared = await prepareSearchIndex(idx, new Map())
+    const hits = searchSimilar(prepared, '⿰亻𡿸', fallback)
+    // q={亻,巛,一,囚} vs 㑎={亻,巛,山} → 2/5=0.4；𱎼 1/5、机 0 均低于阈值
+    expect(hits[0]?.cp).toBe('344E')
+    expect(hits[0]?.score).toBeCloseTo(0.4)
+    expect(hits).toHaveLength(1)
+  })
+
+  it('阈值之外的完全不同部件不产生建议', async () => {
+    const prepared = await prepareSearchIndex(idx, new Map())
+    expect(searchSimilar(prepared, '⿱日月', fallback)).toEqual([]) // 与库内描述无交集
+  })
+})
+
+describe('suggestPatterns（结构族反查模式派生）', () => {
+  it('顶层叶槽位依次替换为通配符', () => {
+    expect(suggestPatterns('⿰亻𡿸')).toEqual(['⿰x𡿸', '⿰亻x'])
+    expect(suggestPatterns('⿱十早')).toEqual(['⿱x早', '⿱十x'])
+  })
+
+  it('其余槽位存在嵌套子树时跳过该槽；单字/解析失败返回空', () => {
+    expect(suggestPatterns('⿰⿱十早一')).toEqual([]) // 左槽为子树，右槽虽是叶也跳过
+    expect(suggestPatterns('一')).toEqual([])
+    expect(suggestPatterns('⿰x')).toEqual([])
   })
 })

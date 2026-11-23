@@ -1,15 +1,22 @@
 /**
  * IDS 字符串的 UI 展示：运算符（系统字体普遍缺字）用 glyphs.json 内联 SVG 渲染，
- * 其余字符正常文本流。用于 chips、构件树、说明文字。
+ * 其余字符用宋体栈文本流（系统字体对生僻字无覆盖会显示横条）。用于 chips、构件树、说明文字。
  */
 import type { CSSProperties } from 'react'
 import { lookup, type GlyphDB } from '../core/glyphStore'
+import { preloadZhsw, ZHSW_STACK } from '../core/zhswFont'
+import { useEffect } from 'react'
 
 const OPERATORS = new Set('⿰⿱⿲⿳⿴⿵⿶⿷⿸⿹⿺⿻⿼⿽')
 
 export function IdsText({ ids, db, size = 14, style }: { ids: string; db: GlyphDB; size?: number; style?: CSSProperties }) {
+  const chars = [...ids].filter((ch) => !OPERATORS.has(ch))
+  useEffect(() => {
+    chars.forEach(preloadZhsw) // 生僻部件按需加载对应平面 TTF
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ids])
   return (
-    <span style={{ lineHeight: 1.2, ...style }}>
+    <span style={{ lineHeight: 1.2, fontFamily: ZHSW_STACK, ...style }}>
       {[...ids].map((ch, i) =>
         OPERATORS.has(ch) ? (
           <InlineGlyph key={i} char={ch} db={db} size={size * 0.92} />

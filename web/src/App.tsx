@@ -13,6 +13,7 @@ import {
   searchByPattern,
   type PreparedSearchIndex,
 } from './core/patternSearch'
+import { searchSimilar, suggestPatterns } from './core/similarSearch'
 import { CASES } from './cases'
 
 export default function App() {
@@ -20,9 +21,13 @@ export default function App() {
   const [size, setSize] = useState(200)
   const [db, setDb] = useState<GlyphDB | null>(null)
   const [fallback, setFallback] = useState<FallbackLookup | null>(null)
+  const [fallbackMap, setFallbackMap] = useState<Record<string, string> | null>(null) // 原始映射（近似搜索的叶展开用）
   const [unicodeIdx, setUnicodeIdx] = useState<Awaited<ReturnType<typeof loadUnicodeIndex>> | null>(null)
+  const [prepared, setPrepared] = useState<PreparedSearchIndex | null>(null)
+  const [prepErr, setPrepErr] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [selCp, setSelCp] = useState<string | null>(null) // 多候选时的预览对象
+  const [pattern, setPattern] = useState('⿰x几') // 按部件反查模式（判定面板可一键跳入）
 
   useEffect(() => {
     loadGlyphDB().then(setDb).catch((e) => setErr(String(e)))
@@ -32,13 +37,21 @@ export default function App() {
     fetch('chise-fallback.json')
       .then((r) => (r.ok ? r.json() : null))
       .then((j: Record<string, string> | null) => {
-        if (j)
+        if (j) {
+          setFallbackMap(j)
           setFallback(
             () => (ch: string) => j[ch.codePointAt(0)!.toString(16).toUpperCase()] ?? null,
           )
+        }
       })
       .catch(() => undefined)
   }, [])
+
+  // 反查索引预解析提升到 App 级：判定面板（近似描述）与按部件反查共用
+  useEffect(() => {
+    if (!unicodeIdx) return
+    prepareSearchIndex(unicodeIdx).then(setPrepared).catch((e) => setPrepErr(String(e)))
+  }, [unicodeIdx])
 
   if (err) return <div className="container">字形库加载失败：{err}</div>
   if (!db) return <div className="container">加载字形库…</div>
@@ -78,7 +91,23 @@ export default function App() {
         ))}
       </div>
 
-      <VerdictPanel ids={ids} unicodeIdx={unicodeIdx} selCp={selCp} setSelCp={setSelCp} />
+      <VerdictPanel
+        ids={ids}
+        db={db}
+        unicodeIdx={unicodeIdx}
+        prepared={prepared}
+        fallbackMap={fallbackMap}
+        selCp={selCp}
+        setSelCp={setSelCp}
+        setIds={(s) => {
+          setIds(s)
+          setSelCp(null)
+        }}
+        onPattern={(p) => {
+          setPattern(p)
+          document.getElementById('pattern-search')?.scrollIntoView({ behavior: 'smooth' })
+        }}
+      />
 
       <Preview
         ids={ids}
@@ -93,6 +122,10 @@ export default function App() {
       <PatternSearch
         db={db}
         unicodeIdx={unicodeIdx}
+        prepared={prepared}
+        buildErr={prepErr}
+        pattern={pattern}
+        setPattern={setPattern}
         onPick={(hitIds, cp) => {
           setIds(hitIds)
           setSelCp(cp)
@@ -116,21 +149,14 @@ const MAX_SHOW = 300
 function PatternSearch(props: {
   db: GlyphDB
   unicodeIdx: Awaited<ReturnType<typeof loadUnicodeIndex>> | null
+  prepared: PreparedSearchIndex | null
+  buildErr: string | null
+  pattern: string
+  setPattern: (p: string) => void
   onPick: (ids: string, cp: string) => void
 }) {
-  const { db, unicodeIdx, onPick } = props
-  const [pattern, setPattern] = useState('⿰x几')
+  const { db, unicodeIdx, prepared, buildErr, pattern, setPattern, onPick } = props
   const [fontOnly, setFontOnly] = useState(true)
-  const [prepared, setPrepared] = useState<PreparedSearchIndex | null>(null)
-  const [buildErr, setBuildErr] = useState<string | null>(null)
-
-  // 索引到位即后台预解析（分块调度，不阻塞交互），首次搜索前通常已就绪
-  useEffect(() => {
-    if (!unicodeIdx) return
-    prepareSearchIndex(unicodeIdx)
-      .then(setPrepared)
-      .catch((e) => setBuildErr(String(e)))
-  }, [unicodeIdx])
 
   const parsed = useMemo(() => parsePattern(pattern), [pattern])
   const hits = useMemo(
@@ -139,7 +165,7 @@ function PatternSearch(props: {
   )
 
   return (
-    <section className="panel" style={{ marginTop: 24 }}>
+    <section className="panel" id="pattern-search" style={{ marginTop: 24 }}>
       <h3 style={{ marginTop: 0, fontSize: 15 }}>按部件反查</h3>
       <div className="controls" style={{ marginBottom: 10 }}>
         <input
@@ -242,13 +268,31 @@ function Composer(props: { ids: string; setIds: (s: string) => void; db: GlyphDB
 
 function VerdictPanel(props: {
   ids: string
+  db: GlyphDB
   unicodeIdx: Awaited<ReturnType<typeof loadUnicodeIndex>> | null
+  prepared: PreparedSearchIndex | null
+  fallbackMap: Record<string, string> | null
   selCp: string | null
   setSelCp: (cp: string | null) => void
+  setIds: (s: string) => void
+  onPattern: (p: string) => void
 }) {
-  const { ids, unicodeIdx, selCp, setSelCp } = props
+  const { ids, db, unicodeIdx, prepared, fallbackMap, selCp, setSelCp, setIds, onPattern } = props
   const parsed = useMemo(() => parse(ids), [ids])
   const candidates = useMemo(() => lookupUnicode(unicodeIdx, ids), [unicodeIdx, ids])
+  // 未命中时找「部件大部分一致」的已收录字（叶集 Jaccard，兜底映射递归展开）
+  const similar = useMemo(
+    () =>
+      candidates.length === 0 && prepared && fallbackMap
+        ? searchSimilar(prepared, ids, fallbackMap)
+        : [],
+    [candidates.length, prepared, fallbackMap, ids],
+  )
+  // 未命中时派生反查模式（顶层叶槽位换通配符），完备浏览该结构族
+  const patterns = useMemo(
+    () => (candidates.length === 0 ? suggestPatterns(ids) : []),
+    [candidates.length, ids],
+  )
 
   if (!parsed) {
     return (
@@ -278,6 +322,40 @@ function VerdictPanel(props: {
           </span>
         )}
       </div>
+      {candidates.length === 0 && similar.length > 0 && (
+        <div className="verdict-row">
+          <span className="badge source">近似描述</span>
+          <span className="cand-row">
+            {similar.map((h) => (
+              <button
+                key={h.cp}
+                className="chip cand"
+                title={h.ids}
+                onClick={() => setIds(h.ids)}
+              >
+                <ZhswChar ch={charOf(h.cp)} size={18} />
+                <span className="cp">{cpLabel(h.cp)}</span>
+                <span className="cp">{Math.round(h.score * 100)}%</span>
+                <span className={`mini ${h.inFont ? 'ok' : 'bad'}`}>{h.inFont ? '字体✓' : '字体✗'}</span>
+              </button>
+            ))}
+          </span>
+          <span className="hint">部件大部分一致但非精确匹配（同形异码部件最常见），点击载入该字描述</span>
+        </div>
+      )}
+      {candidates.length === 0 && patterns.length > 0 && (
+        <div className="verdict-row">
+          <span className="badge source">浏览结构族</span>
+          <span className="cand-row">
+            {patterns.map((p) => (
+              <button key={p} className="chip" onClick={() => onPattern(p)} title="跳转按部件反查">
+                <IdsText ids={p} db={db} />
+              </button>
+            ))}
+          </span>
+          <span className="hint">反查该结构的全部已描述字（通配符 x），如 ⿰亻𡿸 的意向字必在 ⿰亻x 结果中</span>
+        </div>
+      )}
       {candidates.length > 0 && (
         <div className="verdict-row">
           <span className={`badge ${fontVerdict(candidates, selCp) ? 'ok' : 'bad'}`}>

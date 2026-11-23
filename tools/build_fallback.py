@@ -6,9 +6,11 @@
 
 子集策略（v2 · 可解析闭包）：v1 只保留「高频构件自身」的映射，导致
 罕见构件（如 U+21FF8 𡿸，字体有、字形库无）无兜底可查而显示缺字。
-正确口径：保留**每码位一条可解析候选**——候选的全部组件 ∈ 字形库 ∪
-可解析映射（记忆化递归 + 环保护），保证任意命中映射都能拆解到底、
-无死胡同；库内字不需要兜底，直接排除。
+v2 口径：**全量**保留每码位一条可解析候选——候选的全部组件 ∈ 字形库 ∪
+可解析映射（记忆化递归 + 环保护），任意命中必能拆解到底、无死胡同。
+库内字也保留（不排除）：layoutTree 不会查询它们（库内字永不缺字），
+但近似描述搜索（similarSearch）需要用它们做叶展开（如 𭗼 U+2D5FC
+在库内，仍需展开为 ⿱巛山 才能与 ⿰亻𡿸 匹配到 㑎）。
 
 用法: python3 tools/build_fallback.py
 输出: web/public/chise-fallback.json  { "<HEX>": "⿱十早" }
@@ -87,11 +89,9 @@ def main():
         memo[cp] = ok
         return ok
 
-    # 每码位保留第一条可解析候选（源文件序即 CHISE 优先序）
+    # 每码位保留第一条可解析候选（源文件序即 CHISE 优先序）；库内字一并保留
     subset: dict[str, str] = {}
     for cp in sorted(mapping):
-        if cp in avail:
-            continue
         for ids in mapping[cp]:
             if all(c in IDS_OPERATORS or usable(f"{ord(c):X}", (cp,)) for c in ids):
                 subset[cp] = ids
