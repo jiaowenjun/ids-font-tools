@@ -28,16 +28,13 @@ export default function App() {
     loadGlyphDB().then(setDb).catch((e) => setErr(String(e)))
     registerZhswFonts() // 三平面 TTF @font-face（unicode-range 按需下载）
     loadUnicodeIndex().then(setUnicodeIdx).catch(() => setUnicodeIdx(null))
-    // 加载 CHISE 兜底映射（缺字时递归拆解）
+    // 加载 CHISE 兜底映射（缺字时递归拆解；v2 可解析闭包，99k 码位）
     fetch('chise-fallback.json')
       .then((r) => (r.ok ? r.json() : null))
-      .then((j: Record<string, string[]> | null) => {
+      .then((j: Record<string, string> | null) => {
         if (j)
           setFallback(
-            () => (ch: string) => {
-              const list = j[ch.codePointAt(0)!.toString(16).toUpperCase()]
-              return list?.[0] ?? null
-            },
+            () => (ch: string) => j[ch.codePointAt(0)!.toString(16).toUpperCase()] ?? null,
           )
       })
       .catch(() => undefined)
@@ -423,7 +420,9 @@ function TreeView(props: {
       <div style={{ paddingLeft: depth * 18 }} {...leafProps}>
         {n.char}
         <span className="cp">U+{n.cp}</span>
-        {n.missing && <span className="cp">缺字{n.inferred ? '·兜底失败' : ''}</span>}
+        {n.missing && (
+          <span className="cp">字形库缺字{n.inferred ? '·兜底失败' : '·宋体直渲染'}</span>
+        )}
         {n.inferred && !n.missing && <span className="cp">兜底拆解</span>}
       </div>
     )

@@ -4,11 +4,24 @@
  * 遍历 LayoutNode 生成 JSX（而非 innerHTML），以便：
  *  - 悬停任意构件高亮（data-cp + 事件）
  *  - CSS 控制 fill/stroke（currentColor 跟随文字颜色）
+ * 缺字占位框（字形库缺且无兜底拆解）内以宋体原字体直渲染该字（@font-face
+ * 按需加载），系统字体对生僻字无覆盖时会显示横条乱码，不能用。
  */
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import { parse } from '../core/parse'
 import { layoutTree, type LayoutNode, type FallbackLookup } from '../core/layout'
 import { viewportH, type GlyphDB } from '../core/glyphStore'
+import { preloadZhsw, ZHSW_STACK } from '../core/zhswFont'
+
+/** 收集树中缺字叶的字符（触发对应平面 TTF 按需加载） */
+function missingChars(n: LayoutNode, out: Set<string> = new Set()): Set<string> {
+  if (n.kind === 'leaf') {
+    if (n.missing && n.cp !== '?') out.add(n.char)
+  } else {
+    n.children.forEach((c) => missingChars(c, out))
+  }
+  return out
+}
 
 export interface IDSRendererProps {
   ids: string
@@ -37,6 +50,10 @@ export function IDSRenderer({
     const ast = parse(ids)
     return ast ? layoutTree(ast, db, fallback) : null
   }, [ids, db, fallback])
+
+  useEffect(() => {
+    if (layout) missingChars(layout).forEach(preloadZhsw)
+  }, [layout])
 
   if (!layout) {
     return (
@@ -103,10 +120,10 @@ function renderNode(
         <text
           x={n.cell.x + n.cell.w / 2}
           y={n.cell.y + n.cell.h / 2}
-          fontSize={Math.min(n.cell.w, n.cell.h) / 3}
+          fontSize={Math.min(n.cell.w, n.cell.h) * 0.7}
           textAnchor="middle"
           dominantBaseline="central"
-          fontFamily="sans-serif"
+          fontFamily={ZHSW_STACK}
           opacity={opacity}
         >
           {n.char}
