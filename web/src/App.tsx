@@ -2,7 +2,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { parse } from './core/parse'
 import { layoutTree, type LayoutNode, type FallbackLookup } from './core/layout'
 import { loadGlyphDB, lookup, type GlyphDB } from './core/glyphStore'
-import { loadUnicodeIndex, lookupUnicode, charOf, cpLabel, type UnicodeCandidate } from './core/unicodeIndex'
+import {
+  loadUnicodeIndex,
+  lookupUnicodeVariants,
+  charOf,
+  cpLabel,
+  type UnicodeCandidate,
+} from './core/unicodeIndex'
 import { IDSRenderer } from './components/IDSRenderer'
 import { GlyphView, ZhswChar } from './components/GlyphView'
 import { registerZhswFonts, preloadZhsw, ZHSW_STACK } from './core/zhswFont'
@@ -54,6 +60,12 @@ export default function App() {
     prepareSearchIndex(unicodeIdx).then(setPrepared).catch((e) => setPrepErr(String(e)))
   }, [unicodeIdx])
 
+  // 收录判定：精确查询 + 层级规范化变体（折叠/展开）重试，判定/预览共用
+  const variant = useMemo(
+    () => lookupUnicodeVariants(unicodeIdx, ids, fallbackMap),
+    [unicodeIdx, ids, fallbackMap],
+  )
+
   if (err) return <div className="container">字形库加载失败：{err}</div>
   if (!db) return <div className="container">加载字形库…</div>
 
@@ -95,7 +107,8 @@ export default function App() {
       <VerdictPanel
         ids={ids}
         db={db}
-        unicodeIdx={unicodeIdx}
+        candidates={variant.candidates}
+        matchedIds={variant.matchedIds}
         prepared={prepared}
         fallbackMap={fallbackMap}
         selCp={selCp}
@@ -114,7 +127,7 @@ export default function App() {
         ids={ids}
         db={db}
         fallback={fallback}
-        unicodeIdx={unicodeIdx}
+        candidates={variant.candidates}
         selCp={selCp}
         size={size}
         setSize={setSize}
@@ -286,7 +299,9 @@ function Composer(props: { ids: string; setIds: (s: string) => void; db: GlyphDB
 function VerdictPanel(props: {
   ids: string
   db: GlyphDB
-  unicodeIdx: Awaited<ReturnType<typeof loadUnicodeIndex>> | null
+  candidates: UnicodeCandidate[]
+  /** 命中的索引键（层级规范化变体时 ≠ 原输入；null = 未命中） */
+  matchedIds: string | null
   prepared: PreparedSearchIndex | null
   fallbackMap: Record<string, string> | null
   selCp: string | null
@@ -294,9 +309,8 @@ function VerdictPanel(props: {
   setIds: (s: string) => void
   onPattern: (p: string) => void
 }) {
-  const { ids, db, unicodeIdx, prepared, fallbackMap, selCp, setSelCp, setIds, onPattern } = props
+  const { ids, db, candidates, matchedIds, prepared, fallbackMap, selCp, setSelCp, setIds, onPattern } = props
   const parsed = useMemo(() => parse(ids), [ids])
-  const candidates = useMemo(() => lookupUnicode(unicodeIdx, ids), [unicodeIdx, ids])
   // 未命中时找「部件大部分一致」的已收录字（叶集 Jaccard，兜底映射递归展开）
   const similar = useMemo(
     () =>
@@ -339,6 +353,18 @@ function VerdictPanel(props: {
           </span>
         )}
       </div>
+      {matchedIds && matchedIds !== ids && candidates.length > 0 && (
+        <div className="verdict-row">
+          <span className="badge source">层级规范化</span>
+          <span className="hint">
+            索引中该字按等价层级描述收录：
+            <button className="chip" onClick={() => setIds(matchedIds)} title="载入该层级描述">
+              <IdsText ids={matchedIds} db={db} />
+            </button>
+            （CHISE 原子式/展开式惯例不统一，输入已自动折叠/展开匹配）
+          </span>
+        </div>
+      )}
       {candidates.length === 0 && similar.length > 0 && (
         <div className="verdict-row">
           <span className="badge source">近似描述</span>
@@ -411,12 +437,12 @@ function Preview(props: {
   ids: string
   db: GlyphDB
   fallback: FallbackLookup | null
-  unicodeIdx: Awaited<ReturnType<typeof loadUnicodeIndex>> | null
+  candidates: UnicodeCandidate[]
   selCp: string | null
   size: number
   setSize: (n: number) => void
 }) {
-  const { ids, db, fallback, unicodeIdx, selCp, size, setSize } = props
+  const { ids, db, fallback, candidates, selCp, size, setSize } = props
   const [hoverCp, setHoverCp] = useState<string | null>(null)
 
   const parsed = useMemo(() => parse(ids), [ids])
@@ -424,7 +450,6 @@ function Preview(props: {
     () => (parsed ? layoutTree(parsed, db, fallback ?? undefined) : null),
     [parsed, db, fallback],
   )
-  const candidates = useMemo(() => lookupUnicode(unicodeIdx, ids), [unicodeIdx, ids])
   const previewCand = selCp ? candidates.find((c) => c.cp === selCp) : candidates[0]
   const previewCp = previewCand?.cp ?? null
   // 字体收录即并排对比；真字形数据未提取时 GlyphView 回退系统字体代显（hint 如实标注）

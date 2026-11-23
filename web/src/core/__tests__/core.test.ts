@@ -14,6 +14,7 @@ import {
 } from '../patternSearch'
 import { searchSimilar, suggestPatterns } from '../similarSearch'
 import type { UnicodeIndex } from '../unicodeIndex'
+import { lookupUnicodeVariants } from '../unicodeIndex'
 
 interface SimpleLeaf {
   char: string
@@ -255,5 +256,41 @@ describe('suggestPatterns（结构族反查模式派生）', () => {
     expect(suggestPatterns('⿰⿱十早一')).toEqual([]) // 左槽为子树，右槽虽是叶也跳过
     expect(suggestPatterns('一')).toEqual([])
     expect(suggestPatterns('⿰x')).toEqual([])
+  })
+})
+
+describe('lookupUnicodeVariants（层级规范化变体查询）', () => {
+  const idx: UnicodeIndex = {
+    note: 'test',
+    index: {
+      '⿰亻𭗼': [['344E', 1]], // 㑎 · 原子式（𭗼 有编码）
+      '⿱巛山': [['2D5FC', 1]], // 𭗼 自身（折叠映射源）
+      '⿰亻⿱䙲山': [['203A3', 1]], // 𠎣 · 展开式（䙲 有编码却展开，惯例不统一）
+    },
+  }
+  const fallback: Record<string, string> = { '2D5FC': '⿱巛山', '4672': '⿱䙲山' }
+
+  it('精确命中：matchedIds 为原输入', () => {
+    const r = lookupUnicodeVariants(idx, '⿰亻𭗼', fallback)
+    expect(r.matchedIds).toBe('⿰亻𭗼')
+    expect(r.candidates).toEqual([{ cp: '344E', inFont: true }])
+  })
+
+  it('折叠变体：⿰亻⿱巛山 → ⿰亻𭗼 命中 㑎', () => {
+    const r = lookupUnicodeVariants(idx, '⿰亻⿱巛山', fallback)
+    expect(r.matchedIds).toBe('⿰亻𭗼')
+    expect(r.candidates[0]?.cp).toBe('344E')
+  })
+
+  it('展开变体：⿰亻䙲 → ⿰亻⿱䙲山 命中 𠎣', () => {
+    const r = lookupUnicodeVariants(idx, '⿰亻䙲', fallback)
+    expect(r.matchedIds).toBe('⿰亻⿱䙲山')
+    expect(r.candidates[0]?.cp).toBe('203A3')
+  })
+
+  it('无变体可命中时返回空', () => {
+    const r = lookupUnicodeVariants(idx, '⿰木木', fallback)
+    expect(r.candidates).toEqual([])
+    expect(r.matchedIds).toBeNull()
   })
 })
