@@ -43,7 +43,7 @@ export default function App() {
       <header>
         <h1>IDS 合字工坊</h1>
         <p>
-          输入 IDS 序列（如 <IdsText ids="⿰𠦝一" db={db} />）→ 判定 Unicode / 字体收录 → 字体真实字形或方案 A 合成
+          输入 IDS 序列（如 <IdsText ids="⿰𠦝一" db={db} />）→ 判定 Unicode / 字体收录 → 字体收录时真字形与方案 A 合成并排对比
           · 部件取自中华书局宋体（三平面 TTF）
         </p>
       </header>
@@ -165,7 +165,7 @@ function VerdictPanel(props: {
           </span>
           <span className="hint">
             {fontVerdict(candidates, selCp)
-              ? '预览优先使用字体真实字形（若字形数据已提取）'
+              ? '预览并排显示字体真实字形与方案 A 合成，便于对比（若字形数据未提取则系统字体代显）'
               : '三平面 cmap 均无此码位；预览使用方案 A 合成'}
           </span>
         </div>
@@ -210,11 +210,11 @@ function Preview(props: {
     [parsed, db, fallback],
   )
   const candidates = useMemo(() => lookupUnicode(unicodeIdx, ids), [unicodeIdx, ids])
-  const previewCp = selCp ?? candidates[0]?.cp ?? null
-  // 真字形条件：Unicode 命中 + 字体收录 + 字形数据已提取
-  const realGlyph = previewCp && candidates.find((c) => c.cp === previewCp)?.inFont
-    ? lookup(db, charOf(previewCp))
-    : undefined
+  const previewCand = selCp ? candidates.find((c) => c.cp === selCp) : candidates[0]
+  const previewCp = previewCand?.cp ?? null
+  // 字体收录即并排对比；真字形数据未提取时 GlyphView 回退系统字体代显（hint 如实标注）
+  const fontHit = !!previewCand?.inFont && !!previewCp
+  const realGlyph = fontHit ? lookup(db, charOf(previewCp)) : undefined
 
   return (
     <>
@@ -223,43 +223,51 @@ function Preview(props: {
           字号 {size}px
           <input type="range" min={40} max={360} value={size} onChange={(e) => setSize(+e.target.value)} />
         </label>
-        <span className="badge source">{realGlyph ? '字体真实字形' : '方案 A · SVG 合成'}</span>
+        <span className="badge source">{fontHit ? '对比模式：字体真实字形 × 方案 A 合成' : '方案 A · SVG 合成'}</span>
       </div>
 
       <div className="grid-2">
-        <div className="render-box">
-          {realGlyph ? (
-            <GlyphView cp={previewCp!} db={db} size={size} />
-          ) : layout ? (
-            <IDSRenderer
-              ids={ids}
-              db={db}
-              fallback={fallback ?? undefined}
-              size={size}
-              hoverCp={hoverCp}
-              onHover={(cp) => setHoverCp(cp)}
-            />
-          ) : null}
-          <span className="hint">
-            {realGlyph
-              ? `中华书局宋体原生字形 · ${cpLabel(previewCp!)}`
-              : previewCp
-                ? `字体已收录但字形数据未提取（高频 3000 字之外），以方案 A 合成显示 · ${cpLabel(previewCp)}`
-                : '悬停构件查看码位；虚线框 = 字形库缺字（自动经 CHISE 兜底拆解）'}
-          </span>
+        <div className="render-pair">
+          {fontHit && (
+            <div className="render-box">
+              <span className="badge source">字体真实字形</span>
+              <GlyphView cp={previewCp!} db={db} size={size} />
+              <span className="hint">
+                {realGlyph
+                  ? `中华书局宋体原生字形 · ${cpLabel(previewCp!)}`
+                  : `字形数据未提取（高频 3000 字之外），系统字体代显 · ${cpLabel(previewCp!)}`}
+              </span>
+            </div>
+          )}
+          <div className="render-box">
+            <span className="badge source">方案 A · SVG 合成</span>
+            {layout ? (
+              <IDSRenderer
+                ids={ids}
+                db={db}
+                fallback={fallback ?? undefined}
+                size={size}
+                hoverCp={hoverCp}
+                onHover={(cp) => setHoverCp(cp)}
+              />
+            ) : null}
+            <span className="hint">
+              {fontHit
+                ? `与字体原生字形并排对比 · ${cpLabel(previewCp!)}`
+                : previewCand
+                  ? `字体未收录 ${cpLabel(previewCp!)}（三平面 cmap 均无），以方案 A 合成显示`
+                  : '悬停构件查看码位；虚线框 = 字形库缺字（自动经 CHISE 兜底拆解）'}
+            </span>
+          </div>
         </div>
         <div className="panel">
-          <h3 style={{ marginTop: 0, fontSize: 15 }}>构件树{realGlyph ? '（未使用：直接渲染字体字形）' : ''}</h3>
-          {layout && !realGlyph ? (
+          <h3 style={{ marginTop: 0, fontSize: 15 }}>构件树</h3>
+          {layout ? (
             <div className="tree">
               <TreeView node={layout} db={db} hoverCp={hoverCp} setHoverCp={setHoverCp} />
             </div>
           ) : (
-            <p className="hint">
-              {realGlyph
-                ? '该序列描述的字符已收录且有字形，无需合成。'
-                : 'IDS 解析失败。'}
-            </p>
+            <p className="hint">IDS 解析失败。</p>
           )}
         </div>
       </div>

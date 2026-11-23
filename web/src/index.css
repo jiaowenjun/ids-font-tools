@@ -32,6 +32,9 @@ header p { color: var(--muted); margin: 0 0 16px; font-size: 14px; }
 .grid-2 { display: grid; grid-template-columns: auto 1fr; gap: 20px; align-items: start; }
 
 .render-box { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+/* 字体收录时：真字形 × 方案 A 合成并排对比 */
+.render-pair { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+.render-pair .badge.source { font-size: 11px; padding: 2px 8px; }
 
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
