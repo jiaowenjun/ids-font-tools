@@ -7,6 +7,7 @@ import {
   lookupUnicodeVariants,
   charOf,
   cpLabel,
+  isPua,
   type IdentityLookup,
   type UnicodeCandidate,
 } from './core/unicodeIndex'
@@ -337,6 +338,8 @@ function VerdictPanel(props: {
   const target = candidates.find((c) => c.cp === selCp) ?? candidates[0]
   // 单字直查可能给出「有码位但 Unicode 未分配」（私用区 / 预留码位）：有候选 ≠ 已收录
   const unicodeOk = !!target && target.assigned !== false
+  // 私用区对照表命中：候选全是字体的私有映射码位——「Unicode 未收录」红标的来由
+  const puaOnly = !!target && candidates.every((c) => isPua(parseInt(c.cp, 16)))
 
   if (!parsed) {
     return (
@@ -366,7 +369,13 @@ function VerdictPanel(props: {
                   <CandidateChip key={c.cp} c={c} active={target === c} onClick={() => setSelCp(c.cp)} />
                 ))}
                 <span className="hint">
-                  {identity ? identityHint(identity) : candidates.length > 1 ? '多个候选（同描述异码位），点击切换预览' : ''}
+                  {identity
+                    ? identityHint(identity)
+                    : puaOnly
+                      ? '私用区对照表命中：该描述对应字体的私用区字形（厂商私有映射，不是 Unicode 字符）'
+                      : candidates.length > 1
+                        ? '多个候选（同描述异码位），点击切换预览'
+                        : ''}
                 </span>
               </span>
             ) : (
@@ -377,6 +386,15 @@ function VerdictPanel(props: {
           </>
         )}
       </div>
+      {/* 描述未命中 = 无码位可查字体：字体一栏如实标「未判定」，不能让红标「未收录」被读成字体也没有 */}
+      {!stale && !target && (
+        <div className="verdict-row">
+          <span className="badge source">中华书局宋体 未判定</span>
+          <span className="hint">
+            字体私用区的 4.2 万字形没有 IDS 描述数据，只有私用区对照表收录的能由描述命中；已知码位时直接输入该字符走单字直查
+          </span>
+        </div>
+      )}
       {matchedIds && matchedIds !== ids && candidates.length > 0 && (
         <div className="verdict-row">
           <span className="badge source">层级规范化</span>

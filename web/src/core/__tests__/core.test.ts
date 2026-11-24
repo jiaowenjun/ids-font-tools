@@ -14,7 +14,7 @@ import {
 } from '../patternSearch'
 import { searchSimilar, suggestPatterns } from '../similarSearch'
 import type { UnicodeIndex } from '../unicodeIndex'
-import { inRanges, lookupUnicodeVariants } from '../unicodeIndex'
+import { inRanges, isPua, lookupUnicodeVariants, mergePuaIds, type PuaIds } from '../unicodeIndex'
 import { webFontCovers } from '../zhswFont'
 
 interface SimpleLeaf {
@@ -395,6 +395,77 @@ describe('lookupUnicodeVariants（单字直查）', () => {
     expect(r.candidates).toEqual([{ cp: '88A4', inFont: true, assigned: true }])
     expect(r.identity).toMatchObject({ basis: 'unihan', version: '18.0.0' })
     expect(r.identity?.descriptions).toEqual(['⿴衣矛', '⿳亠矛𧘇'])
+  })
+})
+
+describe('私用区对照表（mergePuaIds）', () => {
+  const idx: UnicodeIndex = {
+    note: 'test',
+    index: { '⿰日月': [['660E', 1]], '⿰巾几': [['22052', 1]] }, // 后者 = 𢁒 的 CHISE 拆解（折叠映射源）
+    font: [
+      ['4E00', '9FFF'],
+      ['F0000', 'F0001'],
+      ['F1CDC', 'F1CDC'],
+    ],
+  }
+
+  it('并入后描述可反查到私用区字形：Unicode 未收录，字体收录按 font 区间现算', () => {
+    const m = mergePuaIds(idx, { note: '', index: { '⿱一𢁒': ['f1cdc', ' F1CDD '] } })
+    const r = lookupUnicodeVariants(m, '⿱一𢁒', {})
+    expect(r.matchedIds).toBe('⿱一𢁒')
+    expect(r.candidates).toEqual([
+      { cp: 'F1CDC', inFont: true, assigned: false },
+      { cp: 'F1CDD', inFont: false, assigned: false },
+    ])
+  })
+
+  it('同键已有 CHISE 候选：私用区码位排其后并去重，原索引对象不被改动', () => {
+    const m = mergePuaIds(idx, { note: '', index: { '⿰日月': ['660E', 'F0000', 'F0000'] } })
+    expect(m.index['⿰日月']).toEqual([
+      ['660E', 1],
+      ['F0000', 1],
+    ])
+    expect(idx.index['⿰日月']).toEqual([['660E', 1]])
+    expect(lookupUnicodeVariants(m, '⿰日月', {}).candidates).toEqual([
+      { cp: '660E', inFont: true },
+      { cp: 'F0000', inFont: true, assigned: false },
+    ])
+  })
+
+  it('非法条目跳过：单字符键、非法码位、非私用区码位；空表 / null 原样返回', () => {
+    const m = mergePuaIds(idx, {
+      note: '',
+      index: { 一: ['F1CDC'], '⿰木木': ['660E', 'ZZ', '110000', 'D800'], '⿰火火': [], '⿰水水': 'F1CDC' as unknown as string[] },
+    })
+    expect(m).toBe(idx)
+    expect(mergePuaIds(idx, null)).toBe(idx)
+    expect(mergePuaIds(idx, { note: '', index: {} })).toBe(idx)
+  })
+
+  it('层级规范化对对照表条目同样生效：⿱一⿰巾几 折叠 → ⿱一𢁒', () => {
+    const m = mergePuaIds(idx, { note: '', index: { '⿱一𢁒': ['F1CDC'] } })
+    const r = lookupUnicodeVariants(m, '⿱一⿰巾几', { '22052': '⿰巾几' })
+    expect(r.matchedIds).toBe('⿱一𢁒')
+    expect(r.candidates).toEqual([{ cp: 'F1CDC', inFont: true, assigned: false }])
+  })
+
+  it('真实数据回归：⿱一𢁒 → 字体 15 平面 U+F1CDC（Unicode 未收录、字体✓），表中码位均可渲染真字形', () => {
+    const load = (f: string): unknown =>
+      JSON.parse(readFileSync(fileURLToPath(new URL(`../../../public/${f}`, import.meta.url)), 'utf-8'))
+    const real = load('ids-unicode-index.json') as UnicodeIndex
+    const pua = load('zhsw-pua-ids.json') as PuaIds
+    const fallback = load('chise-fallback.json') as Record<string, string>
+    // 不并入对照表时确实无命中——对照表存在的理由
+    expect(lookupUnicodeVariants(real, '⿱一𢁒', fallback).candidates).toEqual([])
+    const r = lookupUnicodeVariants(mergePuaIds(real, pua), '⿱一𢁒', fallback)
+    expect(r.candidates).toEqual([{ cp: 'F1CDC', inFont: true, assigned: false }])
+    for (const cps of Object.values(pua.index)) {
+      for (const cp of cps) {
+        expect(isPua(parseInt(cp, 16))).toBe(true)
+        expect(inRanges(real.font!, parseInt(cp, 16))).toBe(true) // 三平面 cmap
+        expect(webFontCovers(String.fromCodePoint(parseInt(cp, 16)))).toBe(true) // Web 字体登记区段
+      }
+    }
   })
 })
 

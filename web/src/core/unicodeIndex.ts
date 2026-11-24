@@ -6,6 +6,7 @@
  * IDS 与字符是多对多：返回全部候选，首个为首选（预览对象）。
  * 单字输入不走描述反查而是「单字直查」：候选即该字自身，Unicode 收录查
  * Unihan、字体收录查三平面 cmap，见 lookupUnicodeVariants。
+ * 私用区对照表（zhsw-pua-ids.json）在加载时并入 index，命中后与其余描述同路。
  */
 
 export interface UnicodeCandidate {
@@ -14,8 +15,9 @@ export interface UnicodeCandidate {
   /** 码位是否在中华书局宋体三平面 cmap 中 */
   inFont: boolean
   /**
-   * Unicode 是否已分配该码位。描述反查命中的候选恒为已收录（不设此字段）；
-   * 仅单字直查给出判定，false 即「未收录」（私用区 / 未分配 / 非字符）
+   * Unicode 是否已分配该码位。CHISE / cjkvi 描述反查命中的候选恒为已收录（不设此字段）；
+   * 单字直查给出判定；码位落在私用区（对照表候选）恒为 false。false 即「未收录」
+   * （私用区 / 未分配 / 非字符）
    */
   assigned?: boolean
 }
@@ -29,13 +31,30 @@ export interface UnicodeIndex {
   note: string
 }
 
+/**
+ * 私用区对照表（web/public/zhsw-pua-ids.json，人工维护、入库）。
+ * 中华书局宋体 15 平面的 4.2 万私用区字形：字体文件不含结构信息（post 3.0 无字形名、
+ * 全字体无复合字形），CHISE / cjkvi-ids 只描述 Unicode 已分配码位——没有本表，
+ * 这些字形无法由 IDS 描述反查到。键 = IDS 描述，值 = 大写 hex 码位。
+ */
+export interface PuaIds {
+  note: string
+  index: Record<string, string[]>
+}
+
 let cache: Promise<UnicodeIndex> | null = null
 
 export function loadUnicodeIndex(): Promise<UnicodeIndex> {
-  cache ??= fetch(import.meta.env.BASE_URL + 'ids-unicode-index.json').then((r) => {
-    if (!r.ok) throw new Error(`ids-unicode-index.json 加载失败: ${r.status}`)
-    return r.json() as Promise<UnicodeIndex>
-  })
+  cache ??= Promise.all([
+    fetch(import.meta.env.BASE_URL + 'ids-unicode-index.json').then((r) => {
+      if (!r.ok) throw new Error(`ids-unicode-index.json 加载失败: ${r.status}`)
+      return r.json() as Promise<UnicodeIndex>
+    }),
+    // 对照表缺失/损坏不致命：退化为不含私用区条目的索引
+    fetch(import.meta.env.BASE_URL + 'zhsw-pua-ids.json')
+      .then((r) => (r.ok ? (r.json() as Promise<PuaIds>) : null))
+      .catch(() => null),
+  ]).then(([idx, pua]) => mergePuaIds(idx, pua))
   return cache
 }
 
@@ -152,7 +171,44 @@ export function lookupUnicodeVariants(
   return miss()
 }
 
-const toCand = ([cp, f]: [string, number]): UnicodeCandidate => ({ cp, inFont: f === 1 })
+const toCand = ([cp, f]: [string, number]): UnicodeCandidate => {
+  const c: UnicodeCandidate = { cp, inFont: f === 1 }
+  if (isPua(parseInt(cp, 16))) c.assigned = false // 私用区码位：字体厂商私有映射，不是 Unicode 字符
+  return c
+}
+
+/** 码位是否在私用区（BMP U+E000–F8FF；平面 15/16 补充私用区） */
+export const isPua = (cp: number): boolean =>
+  (cp >= 0xe000 && cp <= 0xf8ff) || (cp >= 0xf0000 && cp <= 0x10fffd)
+
+/**
+ * 把私用区对照表并入索引（纯函数，返回新对象）：同键已有 CHISE / cjkvi 候选时
+ * 私用区码位排在其后；字体收录标记按 font 区间现算（旧版索引无区间 → 0）。
+ * 非法条目跳过：单字符键、非法码位、非私用区码位（本表只收私用区）。
+ */
+export function mergePuaIds(idx: UnicodeIndex, pua: PuaIds | null): UnicodeIndex {
+  if (!pua?.index) return idx
+  const index: Record<string, [string, number][]> = { ...idx.index }
+  let merged = 0
+  for (const [raw, cps] of Object.entries(pua.index)) {
+    const ids = raw.trim()
+    const ast = ids ? parse(ids) : null
+    if (!ast || ast.type === 'char' || ast.type === 'html') continue
+    const entry = [...(index[ids] ?? [])]
+    for (const rawCp of Array.isArray(cps) ? cps : []) {
+      const cp = rawCp.trim().toUpperCase()
+      if (!/^[0-9A-F]{4,6}$/.test(cp)) continue
+      const n = parseInt(cp, 16)
+      if (!isPua(n) || entry.some(([c]) => c === cp)) continue
+      entry.push([cp, idx.font && inRanges(idx.font, n) ? 1 : 0])
+    }
+    if (entry.length > (index[ids]?.length ?? 0)) {
+      index[ids] = entry
+      merged++
+    }
+  }
+  return merged ? { ...idx, index } : idx
+}
 
 /* ---------------- 单字直查 ---------------- */
 
@@ -204,7 +260,7 @@ export function inRanges(ranges: [string, string][], cp: number): boolean {
 function assignedBasis(idx: UnicodeIndex, cp: number): AssignedBasis {
   if (cp >= 0xd800 && cp <= 0xdfff) return 'surrogate'
   if ((cp & 0xfffe) === 0xfffe) return 'noncharacter'
-  if ((cp >= 0xe000 && cp <= 0xf8ff) || (cp >= 0xf0000 && cp <= 0x10fffd)) return 'pua'
+  if (isPua(cp)) return 'pua'
   // 汉字区以 Unihan 为准（预留未分配码位如实判未收录）；区外字符没有权威数据，按合法码位认定
   const ranges = idx.unihan?.ranges
   if (ranges?.length && inRanges(CJK_ENVELOPE, cp)) return inRanges(ranges, cp) ? 'unihan' : 'unassigned'

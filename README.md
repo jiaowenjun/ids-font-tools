@@ -13,6 +13,7 @@
 - **判定链**：Unicode 收录 → 字体收录 → 真字形/合成，口径与降级原因在界面上如实标注
 - **单字直查**：输入单个汉字即判定该字（Unicode 18.0 / 中华书局宋体收录），列出 CHISE / cjkvi 的 IDS 描述，按描述合成并与真字形并排对比；私用区、未分配码位如实判「未收录」
 - **按部件反查**：IDS 模式 + 通配符（如 `⿰x几` = 左右结构·右为几）搜字体已收录的字，支持任意嵌套构型（`⿰亻⿱x山`、`⿴囗⿰xx`），全量索引预解析后实时匹配，点击结果载入工坊
+- **私用区对照表**：中华书局宋体 15 平面的 4.2 万私用区字形既无 Unicode 码位，字体文件也不含结构信息，CHISE / cjkvi-ids 无法描述——`web/public/zhsw-pua-ids.json`（人工维护、入库）记录「IDS → 私用区码位」，加载时并入判定索引；命中后同走「字体收录 → 真字形/合成对比」，Unicode 一栏如实判「未收录」。描述未命中时字体一栏标「未判定」（≠ 字体没有）
 - 任意 IDS 序列**即时渲染**（12 种经典运算符：⿰⿱⿲⿳⿴⿵⿶⿷⿸⿹⿺⿻，支持嵌套）
 - **跨字体 cmap 合并路由**：三份平面字体（00/02/15）覆盖互斥，统一按码位路由取字形
 - **CHISE 兜底拆解**：字形库缺字时自动查官方 IDS 描述递归拆解（如缺 `明` → `⿰日月`，可多级递归）
@@ -29,7 +30,7 @@ python3 tools/build_fallback.py        # → chise-fallback.json（2686 个高�
 
 # 2. 启动
 cd web && npm install && npm run dev   # http://localhost:5173
-npm test                               # vitest（25 用例）
+npm test                               # vitest（44 用例）
 ```
 
 ## 目录
@@ -45,6 +46,7 @@ tools/
 web/                     Vite + React + TS
   src/core/              框架无关核心：parse / glyphStore / layout / unicodeIndex / patternSearch
   src/components/        IDSRenderer（合成）/ GlyphView（真字形）/ IdsText
+  public/zhsw-pua-ids.json  私用区对照表（IDS → 私用区码位，人工维护、入库；其余 public 数据为衍生产物，gitignored）
 docs/acceptance.md       验收文档（实现过程 · 问题与解决 · 评估结论）
 ```
 
