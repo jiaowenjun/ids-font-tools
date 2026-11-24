@@ -7,11 +7,12 @@ import {
   lookupUnicodeVariants,
   charOf,
   cpLabel,
+  type IdentityLookup,
   type UnicodeCandidate,
 } from './core/unicodeIndex'
 import { IDSRenderer } from './components/IDSRenderer'
 import { GlyphView, ZhswChar } from './components/GlyphView'
-import { registerZhswFonts, preloadZhsw, ZHSW_STACK } from './core/zhswFont'
+import { registerZhswFonts, preloadZhsw, webFontCovers, ZHSW_STACK } from './core/zhswFont'
 import { IdsText, InlineGlyph } from './components/IdsText'
 import {
   parsePattern,
@@ -60,7 +61,7 @@ export default function App() {
     prepareSearchIndex(unicodeIdx).then(setPrepared).catch((e) => setPrepErr(String(e)))
   }, [unicodeIdx])
 
-  // 收录判定：精确查询 + 层级规范化变体（折叠/展开）重试，判定/预览共用
+  // 收录判定：精确查询 + 层级规范化变体（折叠/展开）重试，判定/预览共用；单字输入走单字直查
   const variant = useMemo(
     () => lookupUnicodeVariants(unicodeIdx, ids, fallbackMap),
     [unicodeIdx, ids, fallbackMap],
@@ -74,8 +75,8 @@ export default function App() {
       <header>
         <h1>IDS 合字工坊</h1>
         <p>
-          输入 IDS 序列（如 <IdsText ids="⿰𠦝一" db={db} />）→ 判定 Unicode / 字体收录 → 字体收录时真字形与方案 A 合成并排对比
-          · 部件取自中华书局宋体（三平面 TTF）
+          输入 IDS 序列（如 <IdsText ids="⿰𠦝一" db={db} />）或单个汉字（如 袤）→ 判定 Unicode / 字体收录 →
+          字体收录时真字形与方案 A 合成并排对比 · 部件取自中华书局宋体（三平面 TTF）
         </p>
       </header>
 
@@ -109,6 +110,8 @@ export default function App() {
         db={db}
         candidates={variant.candidates}
         matchedIds={variant.matchedIds}
+        identity={variant.identity}
+        stale={variant.stale}
         prepared={prepared}
         fallbackMap={fallbackMap}
         selCp={selCp}
@@ -129,6 +132,7 @@ export default function App() {
         fallback={fallback}
         candidates={variant.candidates}
         selCp={selCp}
+        identity={variant.identity}
         size={size}
         setSize={setSize}
       />
@@ -283,7 +287,7 @@ function Composer(props: { ids: string; setIds: (s: string) => void; db: GlyphDB
         type="text"
         value={ids}
         onChange={(e) => setIds(e.target.value)}
-        placeholder="输入 IDS 序列，如 ⿰𠦝一"
+        placeholder="输入 IDS 序列（如 ⿰𠦝一）或单个汉字"
         spellCheck={false}
         style={{ fontFamily: ZHSW_STACK }}
       />
@@ -302,6 +306,10 @@ function VerdictPanel(props: {
   candidates: UnicodeCandidate[]
   /** 命中的索引键（层级规范化变体时 ≠ 原输入；null = 未命中） */
   matchedIds: string | null
+  /** 单字直查结果（输入为单个字符时非空） */
+  identity: IdentityLookup | null
+  /** 索引为旧版数据，单字直查不可用 */
+  stale: boolean
   prepared: PreparedSearchIndex | null
   fallbackMap: Record<string, string> | null
   selCp: string | null
@@ -309,21 +317,26 @@ function VerdictPanel(props: {
   setIds: (s: string) => void
   onPattern: (p: string) => void
 }) {
-  const { ids, db, candidates, matchedIds, prepared, fallbackMap, selCp, setSelCp, setIds, onPattern } = props
+  const { ids, db, candidates, matchedIds, identity, stale, prepared, fallbackMap, selCp, setSelCp, setIds, onPattern } = props
   const parsed = useMemo(() => parse(ids), [ids])
+  // 近似描述 / 结构族是 IDS 未命中时的发现通道；单字的收录判定不依赖描述，不走这两条
+  const single = parsed?.type === 'char'
   // 未命中时找「部件大部分一致」的已收录字（叶集 Jaccard，兜底映射递归展开）
   const similar = useMemo(
     () =>
-      candidates.length === 0 && prepared && fallbackMap
+      candidates.length === 0 && !single && prepared && fallbackMap
         ? searchSimilar(prepared, ids, fallbackMap)
         : [],
-    [candidates.length, prepared, fallbackMap, ids],
+    [candidates.length, single, prepared, fallbackMap, ids],
   )
   // 未命中时派生反查模式（顶层叶槽位换通配符），完备浏览该结构族
   const patterns = useMemo(
-    () => (candidates.length === 0 ? suggestPatterns(ids) : []),
-    [candidates.length, ids],
+    () => (candidates.length === 0 && !single ? suggestPatterns(ids) : []),
+    [candidates.length, single, ids],
   )
+  const target = candidates.find((c) => c.cp === selCp) ?? candidates[0]
+  // 单字直查可能给出「有码位但 Unicode 未分配」（私用区 / 预留码位）：有候选 ≠ 已收录
+  const unicodeOk = !!target && target.assigned !== false
 
   if (!parsed) {
     return (
@@ -337,20 +350,31 @@ function VerdictPanel(props: {
   return (
     <div className="panel verdict">
       <div className="verdict-row">
-        <span className={`badge ${candidates.length ? 'ok' : 'bad'}`}>
-          Unicode {candidates.length ? '已收录' : '未收录'}
-        </span>
-        {candidates.length === 0 ? (
-          <span className="hint">
-            CHISE / cjkvi-ids 中无此描述（未命中 ≠ Unicode 绝对未收录）；预览将使用方案 A 合成
-          </span>
+        {stale ? (
+          <>
+            <span className="badge bad">Unicode 判定不可用</span>
+            <span className="hint">
+              索引数据为旧版（无字体覆盖区间），单字直查需重新运行 tools/build_unicode_index.py 生成
+            </span>
+          </>
         ) : (
-          <span className="cand-row">
-            {candidates.map((c) => (
-              <CandidateChip key={c.cp} c={c} active={(selCp ?? candidates[0].cp) === c.cp} onClick={() => setSelCp(c.cp)} />
-            ))}
-            <span className="hint">{candidates.length > 1 ? '多个候选（同描述异码位），点击切换预览' : ''}</span>
-          </span>
+          <>
+            <span className={`badge ${unicodeOk ? 'ok' : 'bad'}`}>Unicode {unicodeOk ? '已收录' : '未收录'}</span>
+            {target ? (
+              <span className="cand-row">
+                {candidates.map((c) => (
+                  <CandidateChip key={c.cp} c={c} active={target === c} onClick={() => setSelCp(c.cp)} />
+                ))}
+                <span className="hint">
+                  {identity ? identityHint(identity) : candidates.length > 1 ? '多个候选（同描述异码位），点击切换预览' : ''}
+                </span>
+              </span>
+            ) : (
+              <span className="hint">
+                CHISE / cjkvi-ids 中无此描述（未命中 ≠ Unicode 绝对未收录）；预览将使用方案 A 合成
+              </span>
+            )}
+          </>
         )}
       </div>
       {matchedIds && matchedIds !== ids && candidates.length > 0 && (
@@ -399,14 +423,30 @@ function VerdictPanel(props: {
           <span className="hint">反查该结构的全部已描述字（通配符 x），如 ⿰亻𡿸 的意向字必在 ⿰亻x 结果中</span>
         </div>
       )}
-      {candidates.length > 0 && (
+      {identity && identity.descriptions.length > 0 && (
         <div className="verdict-row">
-          <span className={`badge ${fontVerdict(candidates, selCp) ? 'ok' : 'bad'}`}>
-            中华书局宋体 {fontVerdict(candidates, selCp) ? '已收录' : '未收录'}
+          <span className="badge source">IDS 描述</span>
+          <span className="cand-row">
+            {identity.descriptions.map((d) => (
+              <button
+                key={d}
+                className={`chip${d === identity.description ? ' active' : ''}`}
+                title="载入该描述"
+                onClick={() => setIds(d)}
+              >
+                <IdsText ids={d} db={db} />
+              </button>
+            ))}
           </span>
+          <span className="hint">CHISE / cjkvi-ids 对该字的拆解描述，高亮 = 合成侧所用；点击载入工坊</span>
+        </div>
+      )}
+      {target && (
+        <div className="verdict-row">
+          <span className={`badge ${target.inFont ? 'ok' : 'bad'}`}>中华书局宋体 {target.inFont ? '已收录' : '未收录'}</span>
           <span className="hint">
-            {fontVerdict(candidates, selCp)
-              ? '预览并排显示字体真实字形与方案 A 合成，便于对比（字形未提取时按需加载宋体原字体直接渲染）'
+            {target.inFont
+              ? `预览并排显示字体真实字形与方案 A 合成，便于对比（字形未提取时${realGlyphSource(target.cp)}）`
               : '三平面 cmap 均无此码位；预览使用方案 A 合成'}
           </span>
         </div>
@@ -415,9 +455,33 @@ function VerdictPanel(props: {
   )
 }
 
-function fontVerdict(candidates: UnicodeCandidate[], selCp: string | null): boolean {
-  const target = selCp ? candidates.find((c) => c.cp === selCp) : candidates[0]
-  return target?.inFont ?? false
+/**
+ * 真字形的渲染来源（字形库未提取时）。Web 字体只登记 CJK 区段：单字直查可输入
+ * 区外字符（如拉丁字母），其 cmap 虽收录，页面实际由系统字体渲染，不能声称是宋体。
+ */
+function realGlyphSource(cp: string): string {
+  return webFontCovers(charOf(cp))
+    ? '按需加载宋体 TTF 由浏览器渲染真字形'
+    : '由系统字体渲染（Web 字体仅登记 CJK 区段）'
+}
+
+/** 单字直查的判定口径：已收录时说明依据，未收录时说明原因 */
+function identityHint(id: IdentityLookup): string {
+  const unicode = id.version ? `Unicode ${id.version}` : 'Unicode'
+  switch (id.basis) {
+    case 'unihan':
+      return `单字直查：输入即该字本身 · ${unicode} 已分配（Unihan 收录汉字）`
+    case 'identity':
+      return '单字直查：输入即该字本身 · 合法 Unicode 码位（非汉字区不做分配核查）'
+    case 'pua':
+      return '单字直查：私用区码位（PUA），属字体厂商私有映射，不是 Unicode 字符'
+    case 'unassigned':
+      return `单字直查：${unicode} 未分配此码位（汉字预留区）`
+    case 'surrogate':
+      return '代理区码点（U+D800–DFFF），不是合法字符'
+    case 'noncharacter':
+      return '非字符码点（末两位 FFFE / FFFF），Unicode 永不分配'
+  }
 }
 
 function CandidateChip(props: { c: UnicodeCandidate; active: boolean; onClick: () => void }) {
@@ -439,16 +503,22 @@ function Preview(props: {
   fallback: FallbackLookup | null
   candidates: UnicodeCandidate[]
   selCp: string | null
+  identity: IdentityLookup | null
   size: number
   setSize: (n: number) => void
 }) {
-  const { ids, db, fallback, candidates, selCp, size, setSize } = props
+  const { ids, db, fallback, candidates, selCp, identity, size, setSize } = props
   const [hoverCp, setHoverCp] = useState<string | null>(null)
 
-  const parsed = useMemo(() => parse(ids), [ids])
+  // 单字直查：合成侧按该字的 IDS 描述拆解合成——直接取原字形则与「字体真实字形」恒等，失去对比意义
+  const synthIds = identity?.description ?? ids
+  const parsed = useMemo(() => parse(synthIds), [synthIds])
   const layout = useMemo(
-    () => (parsed ? layoutTree(parsed, db, fallback ?? undefined) : null),
-    [parsed, db, fallback],
+    () =>
+      parsed
+        ? layoutTree(parsed, db, fallback ?? undefined, 'root', undefined, synthIds !== ids)
+        : null,
+    [parsed, synthIds, ids, db, fallback],
   )
   const previewCand = selCp ? candidates.find((c) => c.cp === selCp) : candidates[0]
   const previewCp = previewCand?.cp ?? null
@@ -475,7 +545,7 @@ function Preview(props: {
               <span className="hint">
                 {realGlyph
                   ? `中华书局宋体原生字形 · ${cpLabel(previewCp!)}`
-                  : `字形数据未提取（高频 3000 字之外），按需加载宋体 TTF 由浏览器渲染真字形 · ${cpLabel(previewCp!)}`}
+                  : `字形数据未提取（高频 3000 字之外），${realGlyphSource(previewCp!)} · ${cpLabel(previewCp!)}`}
               </span>
             </div>
           )}
@@ -483,7 +553,7 @@ function Preview(props: {
             <span className="badge source">方案 A · SVG 合成</span>
             {layout ? (
               <IDSRenderer
-                ids={ids}
+                ids={synthIds}
                 db={db}
                 fallback={fallback ?? undefined}
                 size={size}
@@ -493,7 +563,9 @@ function Preview(props: {
             ) : null}
             <span className="hint">
               {fontHit
-                ? `与字体原生字形并排对比 · ${cpLabel(previewCp!)}`
+                ? identity
+                  ? `${identity.description ? '按 IDS 描述合成，与' : '无 IDS 描述可拆解（合成侧直取该字），与'}字体原生字形并排对比 · ${cpLabel(previewCp!)}`
+                  : `与字体原生字形并排对比 · ${cpLabel(previewCp!)}`
                 : previewCand
                   ? `字体未收录 ${cpLabel(previewCp!)}（三平面 cmap 均无），以方案 A 合成显示`
                   : '悬停构件查看码位；虚线框 = 字形库缺字（自动经 CHISE 兜底拆解）'}

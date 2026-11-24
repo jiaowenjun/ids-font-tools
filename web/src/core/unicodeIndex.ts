@@ -4,6 +4,8 @@
  * 口径：CHISE-IDS + cjkvi-ids 反查（Unihan 无 IDS 字段）；
  * 未命中 ≠ Unicode 绝对未收录，只是社区库中无此描述。
  * IDS 与字符是多对多：返回全部候选，首个为首选（预览对象）。
+ * 单字输入不走描述反查而是「单字直查」：候选即该字自身，Unicode 收录查
+ * Unihan、字体收录查三平面 cmap，见 lookupUnicodeVariants。
  */
 
 export interface UnicodeCandidate {
@@ -11,10 +13,19 @@ export interface UnicodeCandidate {
   cp: string
   /** 码位是否在中华书局宋体三平面 cmap 中 */
   inFont: boolean
+  /**
+   * Unicode 是否已分配该码位。描述反查命中的候选恒为已收录（不设此字段）；
+   * 仅单字直查给出判定，false 即「未收录」（私用区 / 未分配 / 非字符）
+   */
+  assigned?: boolean
 }
 
 export interface UnicodeIndex {
   index: Record<string, [string, number][]>
+  /** 中华书局宋体三平面 cmap 并集的闭区间（大写 hex，升序互不相接）；缺失 = 旧版数据 */
+  font?: [string, string][]
+  /** Unihan 已分配汉字（统一表意文字 + 兼容表意文字）的闭区间；ranges 为空 = 构建时无 Unihan 数据 */
+  unihan?: { version: string | null; ranges: [string, string][] }
   note: string
 }
 
@@ -105,17 +116,25 @@ export interface VariantLookup {
   candidates: UnicodeCandidate[]
   /** 命中的键（层级规范化变体时 ≠ 原输入；null = 未命中） */
   matchedIds: string | null
+  /** 单字直查结果（输入为单个字符时非空） */
+  identity: IdentityLookup | null
+  /** 索引为旧版数据（无字体覆盖区间），单字直查不可用；IDS 查询不受影响 */
+  stale: boolean
 }
 
-/** 精确查询 + 层级规范化变体重试（BFS ≤ 2 层） */
+const miss = (): VariantLookup => ({ candidates: [], matchedIds: null, identity: null, stale: false })
+
+/** 精确查询 + 层级规范化变体重试（BFS ≤ 2 层）；单字输入转单字直查 */
 export function lookupUnicodeVariants(
   idx: UnicodeIndex | null,
   ids: string,
   fallback: Record<string, string> | null,
 ): VariantLookup {
-  if (!idx) return { candidates: [], matchedIds: null }
+  if (!idx) return miss()
   const direct = idx.index[ids]
-  if (direct) return { candidates: direct.map(toCand), matchedIds: ids }
+  if (direct) return { candidates: direct.map(toCand), matchedIds: ids, identity: null, stale: false }
+  const ast = parse(ids)
+  if (ast?.type === 'char') return lookupIdentity(idx, (ast as Character).char, fallback ?? {})
   let frontier = [ids]
   for (let depth = 0; depth < 2 && frontier.length; depth++) {
     const next: string[] = []
@@ -123,14 +142,108 @@ export function lookupUnicodeVariants(
       for (const v of variantStrings(s, idx, fallback ?? {})) {
         if (v === ids || v === s) continue
         const hit = idx.index[v]
-        if (hit) return { candidates: hit.map(toCand), matchedIds: v }
+        if (hit) return { candidates: hit.map(toCand), matchedIds: v, identity: null, stale: false }
         next.push(v)
       }
     }
     const uniq = [...new Set(next)]
     frontier = uniq.slice(0, MAX_FRONTIER)
   }
-  return { candidates: [], matchedIds: null }
+  return miss()
 }
 
 const toCand = ([cp, f]: [string, number]): UnicodeCandidate => ({ cp, inFont: f === 1 })
+
+/* ---------------- 单字直查 ---------------- */
+
+/** 单字直查的 Unicode 收录判定依据（未收录时即原因） */
+export type AssignedBasis = 'unihan' | 'identity' | 'pua' | 'unassigned' | 'surrogate' | 'noncharacter'
+
+export interface IdentityLookup {
+  basis: AssignedBasis
+  /** Unihan 版本（无数据为 null） */
+  version: string | null
+  /** 合成侧所用的 IDS 描述（兜底映射中可解析者）；无则 null */
+  description: string | null
+  /** 该字的全部 IDS 描述（索引逆查，源文件序） */
+  descriptions: string[]
+}
+
+/**
+ * 输入本身就是字符而非「描述」：候选即该字的码位。
+ *
+ * 索引键全是长度 ≥ 2 的描述串（CHISE 的单字描述如「口 → 口」构建时即被丢弃），
+ * 字面反查对单字必然落空——也不能改由描述反推收录：字体有字形的 134k 码位里
+ * 45.9k 没有任何描述（私用区 4.2 万、无描述汉字 126 个……）。故 Unicode 收录直接
+ * 查 Unihan 已分配区间，字体收录直接查三平面 cmap 覆盖区间，均与有无描述无关。
+ */
+
+/** 汉字区包络：扩展 A、BMP 统一表意文字、兼容表意文字，及整体预留给 CJK 扩展的平面 2–3（SIP/TIP） */
+const CJK_ENVELOPE: [string, string][] = [
+  ['3400', '4DBF'],
+  ['4E00', '9FFF'],
+  ['F900', 'FAFF'],
+  ['20000', '3FFFF'],
+]
+const ASSIGNED: readonly AssignedBasis[] = ['unihan', 'identity']
+
+/** 码位是否落在升序闭区间表内（二分） */
+export function inRanges(ranges: [string, string][], cp: number): boolean {
+  let lo = 0
+  let hi = ranges.length - 1
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1
+    const [a, b] = ranges[mid]
+    if (cp < parseInt(a, 16)) hi = mid - 1
+    else if (cp > parseInt(b, 16)) lo = mid + 1
+    else return true
+  }
+  return false
+}
+
+function assignedBasis(idx: UnicodeIndex, cp: number): AssignedBasis {
+  if (cp >= 0xd800 && cp <= 0xdfff) return 'surrogate'
+  if ((cp & 0xfffe) === 0xfffe) return 'noncharacter'
+  if ((cp >= 0xe000 && cp <= 0xf8ff) || (cp >= 0xf0000 && cp <= 0x10fffd)) return 'pua'
+  // 汉字区以 Unihan 为准（预留未分配码位如实判未收录）；区外字符没有权威数据，按合法码位认定
+  const ranges = idx.unihan?.ranges
+  if (ranges?.length && inRanges(CJK_ENVELOPE, cp)) return inRanges(ranges, cp) ? 'unihan' : 'unassigned'
+  return 'identity'
+}
+
+const descriptionsCache = new WeakMap<UnicodeIndex, Map<string, string[]>>()
+
+/** 码位的全部 IDS 描述（索引逆查，源文件序）；全表扫描约 107k 键，按索引对象缓存 */
+export function descriptionsOf(idx: UnicodeIndex, cp: string): string[] {
+  let perIdx = descriptionsCache.get(idx)
+  if (!perIdx) {
+    perIdx = new Map()
+    descriptionsCache.set(idx, perIdx)
+  }
+  let hit = perIdx.get(cp)
+  if (!hit) {
+    hit = []
+    for (const [ids, cands] of Object.entries(idx.index)) if (cands.some(([c]) => c === cp)) hit.push(ids)
+    perIdx.set(cp, hit)
+  }
+  return hit
+}
+
+function lookupIdentity(idx: UnicodeIndex, ch: string, fallback: Record<string, string>): VariantLookup {
+  const n = ch.codePointAt(0)!
+  const cp = n.toString(16).toUpperCase()
+  if (!idx.font) return { candidates: [], matchedIds: null, identity: null, stale: true }
+  const basis = assignedBasis(idx, n)
+  const alt = fallback[cp]
+  return {
+    candidates: [{ cp, inFont: inRanges(idx.font, n), assigned: ASSIGNED.includes(basis) }],
+    matchedIds: null,
+    stale: false,
+    identity: {
+      basis,
+      version: idx.unihan?.version ?? null,
+      description: alt && parse(alt) ? alt : null,
+      descriptions: descriptionsOf(idx, cp),
+    },
+  }
+}

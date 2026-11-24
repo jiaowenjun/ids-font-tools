@@ -37,3 +37,21 @@ export function preloadZhsw(ch: string): void {
   registerZhswFonts()
   document.fonts.load(`1em ${ZHSW_FAMILY}`, ch).catch(() => undefined)
 }
+
+let rangeCache: [number, number][] | null = null
+
+/** ch 是否落在三平面 Web 字体的 unicode-range 登记区段内（仅 CJK 区段；区外字符实际由系统字体渲染） */
+export function webFontCovers(ch: string): boolean {
+  if (!rangeCache) {
+    const ranges: [number, number][] = []
+    for (const p of ZHSW_PLANES) {
+      for (const tok of p.ranges.split(',')) {
+        const m = tok.trim().match(/^U\+([0-9A-F]+)(?:-([0-9A-F]+))?$/)!
+        ranges.push([parseInt(m[1], 16), parseInt(m[2] ?? m[1], 16)])
+      }
+    }
+    rangeCache = ranges
+  }
+  const cp = ch.codePointAt(0)!
+  return rangeCache.some(([lo, hi]) => cp >= lo && cp <= hi)
+}

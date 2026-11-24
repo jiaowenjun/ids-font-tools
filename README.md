@@ -2,7 +2,7 @@
 
 **IDS 合字工坊**：输入任意 IDS（表意文字描述序列，如 `⿰𠦝一`），自动完成收录判定并渲染单字——
 
-1. 判定该序列描述的字符是否被 **Unicode 收录**（CHISE/cjkvi-ids 反查，多候选可切换），已收录给出码位
+1. 判定该序列描述的字符是否被 **Unicode 收录**（CHISE/cjkvi-ids 反查，多候选可切换），已收录给出码位；输入单个汉字（如 `袤`）则直查该字本身（Unicode 按 Unihan、字体按三平面 cmap 判定，并列出其 IDS 描述）
 2. 判定是否被**中华书局宋体**（三平面 TTF）收录
 3. 已收录且字形数据可用 → 预览**字体真实字形**；否则 → **方案 A（SVG 动态合成）**，缺字自动经 CHISE 兜底拆解
 
@@ -11,6 +11,7 @@
 ## 核心特性
 
 - **判定链**：Unicode 收录 → 字体收录 → 真字形/合成，口径与降级原因在界面上如实标注
+- **单字直查**：输入单个汉字即判定该字（Unicode 18.0 / 中华书局宋体收录），列出 CHISE / cjkvi 的 IDS 描述，按描述合成并与真字形并排对比；私用区、未分配码位如实判「未收录」
 - **按部件反查**：IDS 模式 + 通配符（如 `⿰x几` = 左右结构·右为几）搜字体已收录的字，支持任意嵌套构型（`⿰亻⿱x山`、`⿴囗⿰xx`），全量索引预解析后实时匹配，点击结果载入工坊
 - 任意 IDS 序列**即时渲染**（12 种经典运算符：⿰⿱⿲⿳⿴⿵⿶⿷⿸⿹⿺⿻，支持嵌套）
 - **跨字体 cmap 合并路由**：三份平面字体（00/02/15）覆盖互斥，统一按码位路由取字形
@@ -22,7 +23,7 @@
 
 ```bash
 # 1. 生成数据（需 fontTools：pip3 install fonttools）
-python3 tools/build_unicode_index.py   # → ids-unicode-index.json（98,305 条反查）+ glyphs-frequent.txt
+python3 tools/build_unicode_index.py   # → ids-unicode-index.json（反查索引 + 字体 cmap / Unihan 已分配区间）+ glyphs-frequent.txt
 python3 tools/extract_glyphs.py        # → glyphs.json（高频 3000 字真字形 + faceBox）
 python3 tools/build_fallback.py        # → chise-fallback.json（2686 个高频构件兜底）
 
@@ -35,10 +36,10 @@ npm test                               # vitest（25 用例）
 
 ```
 assets/中华书局宋体/     三份平面字体（gitignored，需自行放置）
-references/              IDS 参考仓库（gitignored：parse-ids、chise-ids、cjkvi-ids 等）
+references/              IDS 参考仓库（gitignored：parse-ids、chise-ids、cjkvi-ids、unihan 等）
 testcases/ids.txt        用例集（布局引擎覆盖面：嵌套/三元/包围等 8 例）
 tools/
-  build_unicode_index.py IDS→Unicode 反查索引 + 字体覆盖标记 + 高频码位清单
+  build_unicode_index.py IDS→Unicode 反查索引 + 字体覆盖标记/区间 + Unihan 已分配区间 + 高频码位清单
   extract_glyphs.py      cmap 合并路由 + faceBox 统计 + 字形提取（含 IDS 运算符）
   build_fallback.py      CHISE/cjkvi-ids 高频构件兜底映射
 web/                     Vite + React + TS

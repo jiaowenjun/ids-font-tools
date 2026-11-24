@@ -14,7 +14,8 @@ import {
 } from '../patternSearch'
 import { searchSimilar, suggestPatterns } from '../similarSearch'
 import type { UnicodeIndex } from '../unicodeIndex'
-import { lookupUnicodeVariants } from '../unicodeIndex'
+import { inRanges, lookupUnicodeVariants } from '../unicodeIndex'
+import { webFontCovers } from '../zhswFont'
 
 interface SimpleLeaf {
   char: string
@@ -292,5 +293,116 @@ describe('lookupUnicodeVariants（层级规范化变体查询）', () => {
     const r = lookupUnicodeVariants(idx, '⿰木木', fallback)
     expect(r.candidates).toEqual([])
     expect(r.matchedIds).toBeNull()
+  })
+})
+
+describe('lookupUnicodeVariants（单字直查）', () => {
+  // 袤 U+88A4：CHISE ⿴衣矛 / cjkvi ⿳亠矛𧘇；覃 U+8983 落在 Unihan 区间之外充当未分配码位
+  const idx: UnicodeIndex = {
+    note: 'test',
+    index: {
+      '⿴衣矛': [['88A4', 1]],
+      '⿳亠矛𧘇': [['88A4', 1]],
+    },
+    font: [
+      ['4E00', '9FFF'],
+      ['E000', 'E000'],
+      ['F0000', 'F0001'],
+    ],
+    unihan: { version: '18.0.0', ranges: [['4E00', '88A4']] },
+  }
+  const fallback: Record<string, string> = { '88A4': '⿴衣矛' }
+
+  it('常见字「袤」：候选即自身，Unicode（Unihan）/ 字体均已收录，附全部 IDS 描述', () => {
+    const r = lookupUnicodeVariants(idx, '袤', fallback)
+    expect(r.stale).toBe(false)
+    expect(r.candidates).toEqual([{ cp: '88A4', inFont: true, assigned: true }])
+    expect(r.matchedIds).toBeNull()
+    expect(r.identity).toEqual({
+      basis: 'unihan',
+      version: '18.0.0',
+      description: '⿴衣矛',
+      descriptions: ['⿴衣矛', '⿳亠矛𧘇'],
+    })
+  })
+
+  it('无任何 IDS 描述的字（口）：判定不依赖社区库', () => {
+    const r = lookupUnicodeVariants(idx, '口', {})
+    expect(r.candidates).toEqual([{ cp: '53E3', inFont: true, assigned: true }])
+    expect(r.identity?.basis).toBe('unihan')
+    expect(r.identity?.descriptions).toEqual([])
+    expect(r.identity?.description).toBeNull()
+  })
+
+  it('私用区码位：Unicode 未收录（PUA），字体收录如实（含平面 15）', () => {
+    const r = lookupUnicodeVariants(idx, '\uE000', {})
+    expect(r.identity?.basis).toBe('pua')
+    expect(r.candidates).toEqual([{ cp: 'E000', inFont: true, assigned: false }])
+    const r15 = lookupUnicodeVariants(idx, String.fromCodePoint(0xf0000), {})
+    expect(r15.identity?.basis).toBe('pua')
+    expect(r15.candidates).toEqual([{ cp: 'F0000', inFont: true, assigned: false }])
+  })
+
+  it('汉字区未分配码位：Unihan 无记录 → 未收录（字体有无分别如实）', () => {
+    const inFont = lookupUnicodeVariants(idx, '覃', {})
+    expect(inFont.identity?.basis).toBe('unassigned')
+    expect(inFont.candidates).toEqual([{ cp: '8983', inFont: true, assigned: false }])
+    const gap = lookupUnicodeVariants(idx, String.fromCodePoint(0x2a6e0), {}) // 扩展 B/C 之间的空隙
+    expect(gap.identity?.basis).toBe('unassigned')
+    expect(gap.candidates).toEqual([{ cp: '2A6E0', inFont: false, assigned: false }])
+  })
+
+  it('非字符码点：未收录；非汉字：按合法码位认定，字体未覆盖如实', () => {
+    expect(lookupUnicodeVariants(idx, String.fromCodePoint(0xfffe), {}).identity?.basis).toBe('noncharacter')
+    const r = lookupUnicodeVariants(idx, 'a', {})
+    expect(r.identity?.basis).toBe('identity')
+    expect(r.candidates).toEqual([{ cp: '61', inFont: false, assigned: true }])
+  })
+
+  it('无 Unihan 数据：汉字退化为码位认定，私用区/非字符仍可识别', () => {
+    const noUnihan: UnicodeIndex = { ...idx, unihan: { version: null, ranges: [] } }
+    expect(lookupUnicodeVariants(noUnihan, '覃', {}).identity).toMatchObject({ basis: 'identity', version: null })
+    expect(lookupUnicodeVariants(noUnihan, '\uE000', {}).identity?.basis).toBe('pua')
+  })
+
+  it('旧版索引（无字体覆盖区间）：单字直查标记 stale，IDS 查询不受影响', () => {
+    const old: UnicodeIndex = { note: 'old', index: idx.index }
+    const r = lookupUnicodeVariants(old, '袤', fallback)
+    expect(r.stale).toBe(true)
+    expect(r.identity).toBeNull()
+    expect(r.candidates).toEqual([])
+    const hit = lookupUnicodeVariants(old, '⿴衣矛', fallback)
+    expect(hit.stale).toBe(false)
+    expect(hit.candidates).toEqual([{ cp: '88A4', inFont: true }])
+  })
+
+  it('inRanges：端点含边界，区间外为假', () => {
+    expect(inRanges(idx.font!, 0x4e00)).toBe(true)
+    expect(inRanges(idx.font!, 0x9fff)).toBe(true)
+    expect(inRanges(idx.font!, 0x9fff + 1)).toBe(false)
+    expect(inRanges(idx.font!, 0xdfff)).toBe(false)
+    expect(inRanges([], 0x4e00)).toBe(false)
+  })
+
+  it('真实数据回归：袤（U+88A4，广袤）→ 已收录、字体✓、描述 ⿴衣矛 / ⿳亠矛𧘇', () => {
+    const load = (f: string): unknown =>
+      JSON.parse(readFileSync(fileURLToPath(new URL(`../../../public/${f}`, import.meta.url)), 'utf-8'))
+    const r = lookupUnicodeVariants(
+      load('ids-unicode-index.json') as UnicodeIndex,
+      '袤',
+      load('chise-fallback.json') as Record<string, string>,
+    )
+    expect(r.candidates).toEqual([{ cp: '88A4', inFont: true, assigned: true }])
+    expect(r.identity).toMatchObject({ basis: 'unihan', version: '18.0.0' })
+    expect(r.identity?.descriptions).toEqual(['⿴衣矛', '⿳亠矛𧘇'])
+  })
+})
+
+describe('webFontCovers（Web 字体登记区段）', () => {
+  it('CJK 区段与平面 15 私用区已登记；ASCII 等区外字符未登记（cmap 有也不由 Web 字体渲染）', () => {
+    expect(webFontCovers('袤')).toBe(true) // U+88A4 · 00 平面
+    expect(webFontCovers(String.fromCodePoint(0xf0000))).toBe(true) // 15 平面私用区
+    expect(webFontCovers('⿰')).toBe(true) // U+2FF0 运算符
+    expect(webFontCovers('a')).toBe(false) // U+0061
   })
 })
