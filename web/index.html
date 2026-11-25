@@ -3,6 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 亮暗双主题随系统切换：样式加载前即告知浏览器，暗色下不闪白屏；浏览器界面色与页面底色一致 -->
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1b1917" />
     <title>IDS 单字渲染</title>
   </head>
   <body>

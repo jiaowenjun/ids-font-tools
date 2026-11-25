@@ -59,7 +59,7 @@ export function IDSRenderer({
     return (
       <div
         className={className}
-        style={{ width: size, height: size, border: '2px dashed #c33', color: '#c33', display: 'grid', placeItems: 'center', fontSize: size / 8, padding: 4, textAlign: 'center' } as const}
+        style={{ width: size, height: size, border: '2px dashed var(--bad-ink)', color: 'var(--bad-ink)', display: 'grid', placeItems: 'center', fontSize: size / 8, padding: 4, textAlign: 'center' } as const}
       >
         IDS 解析失败
       </div>
